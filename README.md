@@ -1,5 +1,7 @@
 # ControllerFlow
 
+English version: [README.en.md](README.en.md)
+
 一个使用 C# 与 WPF 构建的 Windows 手柄控制器应用。
 
 核心数据流：
@@ -18,8 +20,6 @@ PLAN.md 中的 8 个阶段均已实现：
 6. **震动反馈** — 成功/无匹配/执行失败三类反馈，支持每条 Binding 覆盖强度与时长（`Haptics/GamepadHapticFeedback`）
 7. **桌面体验** — Profile 编辑、按键捕获、目标 App 拾取、托盘（`Desktop/TrayIcon`）、开机自启（`StartupRegistration`）、自检（`Diagnostics/AppSelfCheck`）、日志（`Logging/FileLog`）
 8. **交付** — 单元测试（Core 139 个 + Windows 6 个，全部通过）、`scripts/publish-win-x64.ps1` 发布脚本
-
-English version: [README.en.md](README.en.md)
 
 ## 测试
 
