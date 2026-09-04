@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <!-- 允许在非 Windows（Linux CI）主机上交叉编译本项目，便于持续构建验证。 -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\ControllerFlow.Core\ControllerFlow.Core.csproj" />
+    <ProjectReference Include="..\ControllerFlow.Windows\ControllerFlow.Windows.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- 提取可执行文件图标供系统托盘使用（仅 Windows 运行时使用）。 -->
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
+  </ItemGroup>
+</Project>

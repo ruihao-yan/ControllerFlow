@@ -1,0 +1,303 @@
+<Window x:Class="ControllerFlow.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ControllerFlow 手柄控制器"
+        Width="1180"
+        Height="820"
+        MinWidth="960"
+        MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        StateChanged="OnWindowStateChanged"
+        Closing="OnWindowClosing">
+    <DockPanel>
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem>
+                <TextBlock x:Name="StatusAppText" Text="前台：—" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock x:Name="StatusProfileText" Text="命中 Profile：—" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock x:Name="StatusGamepadText" Text="手柄：—" />
+            </StatusBarItem>
+            <Separator />
+            <StatusBarItem>
+                <TextBlock x:Name="StatusEngineText" Text="引擎：—" />
+            </StatusBarItem>
+        </StatusBar>
+
+        <TabControl Margin="6">
+            <TabItem Header="配置">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="250" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左：Profile 列表 -->
+                    <DockPanel Grid.Column="0">
+                        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button Content="新建" Width="64" Click="OnNewProfileClick" />
+                            <Button Content="复制" Width="64" Margin="6,0,0,0" Click="OnDuplicateProfileClick" />
+                            <Button Content="删除" Width="64" Margin="6,0,0,0" Click="OnDeleteProfileClick" />
+                        </StackPanel>
+                        <ListBox x:Name="ProfileListBox"
+                                 SelectionChanged="OnProfileSelectionChanged"
+                                 DisplayMemberPath="Name" />
+                    </DockPanel>
+
+                    <!-- 右：编辑面板 -->
+                    <ScrollViewer Grid.Column="1" Margin="10,0,0,0" VerticalScrollBarVisibility="Auto">
+                        <StackPanel>
+                            <GroupBox Header="基本信息" Padding="8">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="名称" VerticalAlignment="Center" Margin="0,4" />
+                                    <TextBox x:Name="ProfileNameBox" Grid.Column="1" Margin="8,4" Width="220" HorizontalAlignment="Left" />
+                                    <TextBlock Grid.Column="2" Text="优先级" VerticalAlignment="Center" Margin="0,4" />
+                                    <TextBox x:Name="ProfilePriorityBox" Grid.Column="3" Margin="8,4" Width="80" HorizontalAlignment="Left" />
+
+                                    <CheckBox x:Name="ProfileDefaultBox" Grid.Row="1" Grid.Column="1"
+                                              Content="默认 Profile（兜底）" Margin="8,4" />
+                                    <CheckBox x:Name="ProfileEnabledBox" Grid.Row="1" Grid.Column="3"
+                                              Content="启用" Margin="8,4" />
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox Header="目标应用规则（命中任一规则即启用本 Profile）" Padding="8" Margin="0,8,0,0">
+                                <DockPanel>
+                                    <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                                        <Button Content="拾取当前前台窗口" Click="OnPickForegroundClick" />
+                                        <Button Content="添加规则" Margin="6,0,0,0" Click="OnAddRuleClick" />
+                                        <TextBlock Text="（拾取会填入进程名与完整路径）" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#777777" />
+                                    </StackPanel>
+                                    <ItemsControl x:Name="RulesItems" Margin="0,0,0,6">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,2">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBox Grid.Column="0" Text="{Binding ProcessName, UpdateSourceTrigger=PropertyChanged}"
+                                                             ToolTip="进程名（如 chrome，忽略大小写）" />
+                                                    <TextBox Grid.Column="1" Margin="4,0,0,0" Text="{Binding ExecutablePath, UpdateSourceTrigger=PropertyChanged}"
+                                                             ToolTip="可执行文件完整路径（忽略大小写）" />
+                                                    <TextBox Grid.Column="2" Margin="4,0,0,0" Text="{Binding WindowTitlePattern, UpdateSourceTrigger=PropertyChanged}"
+                                                             ToolTip="窗口标题正则（如 .*\.cs）" />
+                                                    <Button Grid.Column="3" Content="删除" Margin="6,0,0,0" Padding="8,2"
+                                                            Click="OnDeleteRuleClick" Tag="{Binding}" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </DockPanel>
+                            </GroupBox>
+
+                            <GroupBox Header="按键映射（Binding）" Padding="8" Margin="0,8,0,0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Button Content="添加" Width="60" Click="OnAddBindingClick" />
+                                            <Button Content="更新选中" Width="76" Margin="6,0,0,0" Click="OnUpdateBindingClick" />
+                                            <Button Content="删除" Width="60" Margin="6,0,0,0" Click="OnDeleteBindingClick" />
+                                            <Button Content="测试输出" Width="76" Margin="6,0,0,0" Click="OnTestBindingClick" />
+                                            <TextBlock Text="（捕获按钮监听下一次按下，编辑时引擎自动暂停）"
+                                                       VerticalAlignment="Center" Margin="10,0,0,0" Foreground="#777777" />
+                                        </StackPanel>
+                                        <ListBox x:Name="BindingsListBox" Height="120"
+                                                 SelectionChanged="OnBindingSelectionChanged" />
+                                    </DockPanel>
+
+                                    <!-- Binding 编辑区 -->
+                                    <Border Grid.Row="1" Margin="0,8,0,0" BorderBrush="#C8C8C8" BorderThickness="1" Padding="8" CornerRadius="3">
+                                        <StackPanel>
+                                            <TextBlock Text="触发" FontWeight="SemiBold" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="控件" VerticalAlignment="Center" />
+                                                <ComboBox x:Name="TriggerControlBox" Width="120" Margin="8,0,0,0" />
+                                                <TextBlock Text="手势" VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <ComboBox x:Name="TriggerGestureBox" Width="90" Margin="8,0,0,0" />
+                                                <TextBlock Text="长按重复间隔(ms)" VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <TextBox x:Name="TriggerHoldBox" Width="70" Margin="8,0,0,0" Text="0" />
+                                                <Button x:Name="CaptureTriggerButton" Content="捕获按键…" Margin="16,0,0,0" Padding="10,2"
+                                                        Click="OnCaptureTriggerClick" />
+                                                <CheckBox x:Name="BindingEnabledBox" Content="启用" Margin="16,0,0,0"
+                                                          VerticalAlignment="Center" />
+                                            </StackPanel>
+
+                                            <TextBlock Text="输出动作" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="类型" VerticalAlignment="Center" />
+                                                <ComboBox x:Name="ActionTypeBox" Width="130" Margin="8,0,0,0"
+                                                          SelectionChanged="OnActionTypeChanged" />
+                                            </StackPanel>
+
+                                            <Grid Margin="0,6,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <!-- 键盘 / 语音快捷键 -->
+                                                <StackPanel Grid.Column="0">
+                                                    <StackPanel x:Name="KeyboardActionPanel">
+                                                        <TextBlock Text="组合键（+ 分隔，如 Ctrl+Alt+C）" />
+                                                        <TextBox x:Name="KeyboardKeysBox" Margin="0,4,0,0" />
+                                                    </StackPanel>
+
+                                                    <StackPanel x:Name="SpeechActionPanel" Visibility="Collapsed">
+                                                        <TextBlock Text="开始快捷键（按住说话用 KeyDownOnly）" />
+                                                        <TextBox x:Name="SpeechStartKeysBox" Margin="0,4,0,0" ToolTip="留空 + 配置工具路径 = 进程模式" />
+                                                        <TextBlock Text="停止快捷键" Margin="0,6,0,0" />
+                                                        <TextBox x:Name="SpeechStopKeysBox" Margin="0,4,0,0" />
+                                                        <TextBlock Text="语音工具路径（可选；配置后为进程模式：按住启动、松开结束）" Margin="0,6,0,0" />
+                                                        <TextBox x:Name="SpeechExecutableBox" Margin="0,4,0,0" />
+                                                        <TextBlock Text="工具参数（可选）" Margin="0,6,0,0" />
+                                                        <TextBox x:Name="SpeechArgumentsBox" Margin="0,4,0,0" />
+                                                    </StackPanel>
+                                                </StackPanel>
+
+                                                <!-- 鼠标 / 媒体 / 启动程序 -->
+                                                <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                                    <StackPanel x:Name="MouseActionPanel" Visibility="Collapsed">
+                                                        <TextBlock Text="操作" />
+                                                        <ComboBox x:Name="MouseOperationBox" Margin="0,4,0,0" />
+                                                        <TextBlock Text="数量（位移 / 滚动量）" Margin="0,6,0,0" />
+                                                        <TextBox x:Name="MouseAmountBox" Margin="0,4,0,0" Text="0" />
+                                                    </StackPanel>
+
+                                                    <StackPanel x:Name="MediaActionPanel" Visibility="Collapsed">
+                                                        <TextBlock Text="媒体 / 浏览器键" />
+                                                        <ComboBox x:Name="MediaKeyBox" Margin="0,4,0,0" />
+                                                    </StackPanel>
+
+                                                    <StackPanel x:Name="LaunchActionPanel" Visibility="Collapsed">
+                                                        <TextBlock Text="程序路径" />
+                                                        <TextBox x:Name="LaunchPathBox" Margin="0,4,0,0" />
+                                                        <TextBlock Text="参数（可选）" Margin="0,6,0,0" />
+                                                        <TextBox x:Name="LaunchArgsBox" Margin="0,4,0,0" />
+                                                    </StackPanel>
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <TextBlock Text="震动反馈（可选，覆盖全局默认）" FontWeight="SemiBold" Margin="0,10,0,0" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="左电机(0-1)" VerticalAlignment="Center" />
+                                                <TextBox x:Name="FeedbackLeftBox" Width="50" Margin="8,0,0,0" Text="" />
+                                                <TextBlock Text="右电机(0-1)" VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <TextBox x:Name="FeedbackRightBox" Width="50" Margin="8,0,0,0" Text="" />
+                                                <TextBlock Text="时长(ms)" VerticalAlignment="Center" Margin="16,0,0,0" />
+                                                <TextBox x:Name="FeedbackDurationBox" Width="70" Margin="8,0,0,0" Text="" />
+                                                <Button Content="清除反馈" Margin="12,0,0,0" Padding="10,2" Click="OnClearFeedbackClick" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+                            </GroupBox>
+
+                            <GroupBox Header="校验与保存" Padding="8" Margin="0,8,0,0">
+                                <DockPanel>
+                                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
+                                        <Button Content="保存全部" Width="90" FontWeight="SemiBold" Click="OnSaveAllClick" />
+                                        <Button Content="导入…" Width="70" Margin="6,0,0,0" Click="OnImportClick" />
+                                        <Button Content="导出…" Width="70" Margin="6,0,0,0" Click="OnExportClick" />
+                                        <TextBlock x:Name="SaveStatusText" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#777777" />
+                                    </StackPanel>
+                                    <TextBox x:Name="ValidationIssuesBox" IsReadOnly="True" TextWrapping="Wrap"
+                                             Height="80" VerticalScrollBarVisibility="Auto"
+                                             FontFamily="Consolas, Microsoft YaHei" />
+                                </DockPanel>
+                            </GroupBox>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="自检与日志">
+                <DockPanel Margin="12">
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="运行自检" Width="96" Click="OnRunSelfCheckClick" />
+                        <TextBlock x:Name="SelfCheckHintText" VerticalAlignment="Center" Margin="10,0,0,0" Foreground="#777777" />
+                    </StackPanel>
+                    <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                        <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                            <Button Content="打开日志目录" Padding="10,2" Click="OnOpenLogDirectoryClick" />
+                        </StackPanel>
+                        <TextBlock x:Name="LogPathText" Text="日志：" VerticalAlignment="Center"
+                                   Margin="10,0,0,0" Foreground="#666666" TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                    <ItemsControl x:Name="SelfCheckItems">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="220" />
+                                        <ColumnDefinition Width="70" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="{Binding Name}" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" VerticalAlignment="Center" FontWeight="SemiBold">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="通过" />
+                                                <Setter Property="Foreground" Value="#2E7D32" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Passed}" Value="False">
+                                                        <Setter Property="Text" Value="失败" />
+                                                        <Setter Property="Foreground" Value="#C62828" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Grid.Column="2" Text="{Binding Detail}" VerticalAlignment="Center"
+                                               Foreground="#666666" TextWrapping="Wrap" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="使用说明">
+                <ScrollViewer Margin="16">
+                    <StackPanel>
+                        <TextBlock FontSize="20" FontWeight="SemiBold" Text="快速开始" />
+                        <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" LineHeight="26">
+                            1. 连接手柄：支持 XInput 兼容手柄（Xbox / 主流国产手柄），即插即用，热插拔自动识别。&#x0a;
+                            2. 新建 Profile：为目标软件创建配置（名称、优先级），点击「拾取当前前台窗口」自动填入进程名与路径规则。&#x0a;
+                            3. 添加按键映射：选择要使用的手柄控件，点「捕获按键…」后按下手柄按键即可填入；配置输出动作（组合键 / 鼠标 / 媒体键 / 启动程序 / 语音）。&#x0a;
+                            4. 语音转文字：快捷键模式配置「开始 / 停止」快捷键（开始用 KeyDownOnly 实现按住说话）；或配置工具路径进入进程模式（按住启动工具、松开结束）。&#x0a;
+                            5. 保存全部：通过校验（错误以红色问题列出）后写入 %LocalAppData%\ControllerFlow\profiles.json。&#x0a;
+                            6. 最小化到系统托盘：关闭窗口即最小化，右键托盘图标可「退出」或切换「开机自启」。
+                        </TextBlock>
+                        <TextBlock FontSize="20" FontWeight="SemiBold" Margin="0,18,0,0" Text="匹配规则" />
+                        <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="26"
+                                   Text="Profile 按优先级排序：前台应用命中「目标应用规则」即选用该 Profile（可配置多个规则，命中任一即可）；未命中时使用默认 Profile 兜底；长按重复间隔控制在映射键保持时每 N 毫秒重复一次输出。" />
+                        <TextBlock FontSize="20" FontWeight="SemiBold" Margin="0,18,0,0" Text="配置文件" />
+                        <TextBlock x:Name="ConfigPathText" Margin="0,8,0,0" TextWrapping="Wrap" LineHeight="26" />
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>
