@@ -8,9 +8,16 @@ English version: [README.en.md](README.en.md)
 
 `Controller Input -> Router（前台 App + 用户 Profile）-> Output -> Haptic Feedback`
 
-## 当前完成度
+## 基本功能
 
-PLAN.md 中的 8 个阶段均已实现：
+- 用户创建 Profile，选择目标软件并配置手柄按键映射。
+- 手柄输入通过 Router 按当前前台应用匹配 Profile，无匹配时使用默认 Profile。
+- 支持键盘组合键、鼠标、媒体键、启动程序等输出动作。
+- 按住映射键调用本地语音转文字工具，松开时结束。
+- 映射执行后触发手柄震动反馈，反馈参数可随 Binding 配置。
+- 前台应用变化时自动切换 Profile。
+
+## 当前完成度
 
 1. **工程骨架与核心边界** — WPF App、Core、Windows Infrastructure、Core/Windows Tests 四个项目；领域模型、端口接口、Profile 路由
 2. **手柄输入层** — `Windows.Gaming.Input` 读取（`ControllerFlow.Windows/Input`），Core 侧 `GamepadInputTracker` 统一为按下/释放/长按事件，含死区、抖动与重复触发处理

@@ -6,9 +6,16 @@ Core data flow:
 
 `Controller Input -> Router (foreground App + user Profile) -> Output -> Haptic Feedback`
 
-## Status
+## Key features
 
-All 8 stages in PLAN.md are implemented:
+- Users create profiles, pick a target app, and configure gamepad key mappings.
+- Gamepad input goes through a Router that matches the foreground app to a profile, falling back to a default profile when there is no match.
+- Output actions include keyboard chords, mouse, media keys, and program launch.
+- Hold a mapped key to invoke a local speech-to-text tool, release to stop.
+- Haptic feedback fires after mapped actions, with per-binding feedback parameters.
+- The profile switches automatically when the foreground app changes.
+
+## Status
 
 1. **Project skeleton and core boundaries** — WPF App, Core, Windows Infrastructure, Core/Windows Tests projects; domain models, port interfaces, profile routing
 2. **Gamepad input layer** — `Windows.Gaming.Input` reading (`ControllerFlow.Windows/Input`), `GamepadInputTracker` on the Core side normalizes press/release/hold events with dead zone, debounce and repeat handling
