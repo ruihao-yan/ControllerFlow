@@ -15,10 +15,10 @@ using ControllerFlow.Windows.Diagnostics;
 using ControllerFlow.Windows.Logging;
 using Windows.Gaming.Input;
 
-// 与 WPF 自身类型（System.Windows.Input.InputGesture / InputBinding / CoreMouseAction）重名，使用别名消歧。
+// 与 WPF 自身类型（System.Windows.Input.InputGesture / InputBinding / MouseAction）重名，使用别名消歧。
 using CoreInputGesture = ControllerFlow.Core.Models.InputGesture;
 using CoreInputBinding = ControllerFlow.Core.Models.InputBinding;
-using CoreMouseAction = ControllerFlow.Core.Models.CoreMouseAction;
+using CoreMouseAction = ControllerFlow.Core.Models.MouseAction;
 
 namespace ControllerFlow.App;
 
@@ -34,21 +34,24 @@ public partial class MainWindow : Window
         "BrowserBack", "BrowserForward", "BrowserHome"
     ];
 
-    private static readonly (string Label, CoreInputGesture Gesture)[] GestureOptions =
+    private sealed record GestureOption(string Label, CoreInputGesture Gesture);
+    private sealed record MouseOperationOption(string Label, MouseOperation Operation);
+
+    private static readonly GestureOption[] GestureOptions =
     [
-        ("按下", CoreInputGesture.Pressed),
-        ("释放", CoreInputGesture.Released),
-        ("长按", CoreInputGesture.Held)
+        new("按下", CoreInputGesture.Pressed),
+        new("释放", CoreInputGesture.Released),
+        new("长按", CoreInputGesture.Held)
     ];
 
-    private static readonly (string Label, MouseOperation Operation)[] MouseOperationOptions =
+    private static readonly MouseOperationOption[] MouseOperationOptions =
     [
-        ("左键单击", MouseOperation.LeftClick),
-        ("右键单击", MouseOperation.RightClick),
-        ("中键单击", MouseOperation.MiddleClick),
-        ("垂直滚动", MouseOperation.ScrollVertical),
-        ("水平滚动", MouseOperation.ScrollHorizontal),
-        ("相对移动", MouseOperation.Move)
+        new("左键单击", MouseOperation.LeftClick),
+        new("右键单击", MouseOperation.RightClick),
+        new("中键单击", MouseOperation.MiddleClick),
+        new("垂直滚动", MouseOperation.ScrollVertical),
+        new("水平滚动", MouseOperation.ScrollHorizontal),
+        new("相对移动", MouseOperation.Move)
     ];
 
     private readonly AppServices _services;
@@ -59,7 +62,10 @@ public partial class MainWindow : Window
 
     private TrayIcon? _trayIcon;
     private HwndSource? _hwndSource;
-    private IntPtr _iconHandle = IntPtr.Zero;
+    private System.Drawing.Icon? _appIcon;
+    private IntPtr _iconHandle => _appIcon?.Handle ?? IntPtr.Zero;
+    private CancellationTokenSource? _captureCts;
+    private ControllerProfile? _editingProfile;
     private bool _exiting;
     private bool _capturing;
     private bool _syncingUi;
@@ -126,6 +132,21 @@ public partial class MainWindow : Window
             return;
         }
 
+        try
+        {
+            SaveCurrentDraft();
+        }
+        catch (ArgumentException ex)
+        {
+            _syncingUi = true;
+            ProfileListBox.SelectedItem = _editingProfile;
+            _syncingUi = false;
+            ShowValidationError(ex.Message);
+            return;
+        }
+
+        profile = _profiles.First(item => item.Id == profile.Id);
+        _editingProfile = profile;
         _syncingUi = true;
         try
         {
@@ -161,6 +182,20 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SaveCurrentDraft()
+    {
+        if (_editingProfile is null)
+        {
+            return;
+        }
+
+        var index = _profiles.FindIndex(profile => profile.Id == _editingProfile.Id);
+        if (index >= 0)
+        {
+            _profiles[index] = BuildProfileFromFields(_profiles[index]);
+        }
+    }
+
     private void OnNewProfileClick(object sender, RoutedEventArgs e) =>
         AddOrReplaceProfile(ProfileEditorService.CreateProfile("新配置"));
 
@@ -171,6 +206,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        profile = BuildProfileFromFields(profile);
         var copy = profile with
         {
             Id = Guid.NewGuid(),
@@ -182,6 +218,8 @@ public partial class MainWindow : Window
 
     private void AddOrReplaceProfile(ControllerProfile profile)
     {
+        SaveCurrentDraft();
+        _editingProfile = null;
         var index = _profiles.FindIndex(existing => existing.Id == profile.Id);
         if (index >= 0)
         {
@@ -204,7 +242,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        _profiles.Remove(profile);
+        _editingProfile = null;
+        _profiles.RemoveAll(item => item.Id == profile.Id);
         ProfileListBox.ItemsSource = null;
         ProfileListBox.ItemsSource = _profiles;
         ProfileListBox.SelectedIndex = _profiles.Count > 0 ? 0 : -1;
@@ -231,12 +270,16 @@ public partial class MainWindow : Window
 
     private async void OnPickForegroundClick(object sender, RoutedEventArgs e)
     {
+        var button = (Button)sender;
+        button.IsEnabled = false;
         try
         {
+            SaveStatusText.Text = "请在 3 秒内切换到目标窗口…";
+            await Task.Delay(TimeSpan.FromSeconds(3));
             var app = await _services.ForegroundProvider.GetCurrentAsync(CancellationToken.None);
-            if (app is null)
+            if (app is null || app.ProcessId == Environment.ProcessId)
             {
-                ShowValidationError("当前没有可拾取的前台窗口。");
+                ShowValidationError("请切换到目标软件后重新拾取。");
                 return;
             }
 
@@ -253,6 +296,10 @@ public partial class MainWindow : Window
         {
             FileLog.Error("拾取前台窗口失败。", ex);
             ShowValidationError($"拾取失败：{ex.Message}");
+        }
+        finally
+        {
+            button.IsEnabled = true;
         }
     }
 
@@ -469,7 +516,7 @@ public partial class MainWindow : Window
             return null;
         }
 
-        var gesture = (CoreInputGesture)(TriggerGestureBox.SelectedItem as (string Label, CoreInputGesture Gesture)?)?.Gesture ?? CoreInputGesture.Pressed;
+        var gesture = (TriggerGestureBox.SelectedItem as GestureOption)?.Gesture ?? CoreInputGesture.Pressed;
         var hold = ParseInt(TriggerHoldBox.Text, 0, 10_000);
         var action = BuildActionFromFields();
         if (action is null)
@@ -503,7 +550,7 @@ public partial class MainWindow : Window
                 case 1:
                 {
                     var operation = MouseOperationOptions[Math.Max(0, MouseOperationBox.SelectedIndex)].Operation;
-                    return new CoreMouseAction(operation, ParseInt(MouseAmountBox.Text, 0, 100_000));
+                    return new CoreMouseAction(operation, ParseInt(MouseAmountBox.Text, -100_000, 100_000));
                 }
 
                 case 2:
@@ -666,6 +713,19 @@ public partial class MainWindow : Window
             }
 
             await _services.Repository.ReloadAsync(CancellationToken.None);
+            var selectedId = _editingProfile?.Id;
+            _syncingUi = true;
+            try
+            {
+                ProfileListBox.ItemsSource = null;
+                ProfileListBox.ItemsSource = _profiles;
+                _editingProfile = _profiles.FirstOrDefault(profile => profile.Id == selectedId);
+                ProfileListBox.SelectedItem = _editingProfile;
+            }
+            finally
+            {
+                _syncingUi = false;
+            }
             SaveStatusText.Text = $"已保存（{DateTime.Now:HH:mm:ss}），共 {_profiles.Count} 个 Profile。";
             FileLog.Info($"保存 {_profiles.Count} 个 Profile 成功。");
             ShowValidation(result.Issues);
@@ -719,6 +779,7 @@ public partial class MainWindow : Window
 
         try
         {
+            SaveCurrentDraft();
             var imported = await _services.Editor.ImportAsync(dialog.FileName);
             if (imported.Count == 0)
             {
@@ -726,6 +787,7 @@ public partial class MainWindow : Window
                 return;
             }
 
+            _editingProfile = null;
             foreach (var profile in imported)
             {
                 var index = _profiles.FindIndex(existing => existing.Id == profile.Id);
@@ -741,6 +803,7 @@ public partial class MainWindow : Window
 
             ProfileListBox.ItemsSource = null;
             ProfileListBox.ItemsSource = _profiles;
+            ProfileListBox.SelectedIndex = 0;
             SaveStatusText.Text = $"已导入 {imported.Count} 个 Profile，保存后生效。";
             FileLog.Info($"从 {dialog.FileName} 导入 {imported.Count} 个 Profile。");
         }
@@ -766,6 +829,7 @@ public partial class MainWindow : Window
 
         try
         {
+            SaveCurrentDraft();
             await _services.Editor.ExportAsync(_profiles, dialog.FileName);
             SaveStatusText.Text = $"已导出到 {dialog.FileName}。";
             FileLog.Info($"导出 {_profiles.Count} 个 Profile 到 {dialog.FileName}。");
@@ -933,7 +997,7 @@ public partial class MainWindow : Window
         _hwndSource = HwndSource.FromHwnd(handle);
         _hwndSource?.AddHook(WndProc);
 
-        _iconHandle = LoadAppIcon();
+        _appIcon = LoadAppIcon();
         _trayIcon = new TrayIcon(handle);
         _trayIcon.Add(_iconHandle, "ControllerFlow 手柄控制器");
 
@@ -941,17 +1005,16 @@ public partial class MainWindow : Window
         ConfigPathText.Text = $"Profile 配置文件：{_services.ProfilesFilePath}（可用任意文本编辑器手工修改，重启后生效）";
     }
 
-    private static IntPtr LoadAppIcon()
+    private static System.Drawing.Icon? LoadAppIcon()
     {
         try
         {
-            using var icon = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? string.Empty);
-            return icon?.Handle ?? IntPtr.Zero;
+            return System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath ?? string.Empty);
         }
         catch (Exception ex)
         {
             FileLog.Warn($"加载应用图标失败（托盘无图标）。{ex.Message}");
-            return IntPtr.Zero;
+            return null;
         }
     }
 
@@ -1061,16 +1124,12 @@ public partial class MainWindow : Window
         _hwndSource?.RemoveHook(WndProc);
         _trayIcon?.Dispose();
         _gamepadTimer?.Stop();
-        if (_iconHandle != IntPtr.Zero)
-        {
-            DestroyIcon(_iconHandle);
-        }
+        _appIcon?.Dispose();
+        _appIcon = null;
+        _captureCts?.Dispose();
 
         base.OnClosed(e);
     }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern bool DestroyIcon(IntPtr handle);
 
     private static readonly string[] _actionTypes = ["键盘快捷键", "鼠标", "媒体键", "启动程序", "语音"];
 }

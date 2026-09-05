@@ -42,6 +42,8 @@ public sealed class RoutingEngine
     private readonly RoutingEngineOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly object _sync = new();
+    private readonly SemaphoreSlim _eventGate = new(1, 1);
+    private readonly Dictionary<(string Device, string Control), RoutingDecision> _activePresses = new();
     private readonly Dictionary<Guid, List<string>> _heldKeys = new();
     private readonly Dictionary<Guid, SpeechToolSession> _speechSessions = new();
     private readonly Dictionary<Guid, long> _lastRepeatAt = new();
@@ -63,7 +65,7 @@ public sealed class RoutingEngine
     }
 
     /// <summary>
-    /// 暂停路由（例如按键捕获窗口打开时）。暂停期间不路由、不执行、不震动。
+    /// 暂停路由（例如按键捕获窗口打开时）。暂停期间只清理已有按键会话，不执行新绑定。
     /// </summary>
     public bool IsPaused { get; set; }
 
@@ -74,12 +76,54 @@ public sealed class RoutingEngine
     {
         ArgumentNullException.ThrowIfNull(input);
 
+        await _eventGate.WaitAsync(cancellationToken);
+        try
+        {
+            return await HandleCoreAsync(input, cancellationToken);
+        }
+        finally
+        {
+            _eventGate.Release();
+        }
+    }
+
+    private async ValueTask<ExecutionOutcome> HandleCoreAsync(
+        ControllerInputEvent input, CancellationToken cancellationToken)
+    {
+        var control = (input.DeviceId, input.ControlId.ToUpperInvariant());
+        RoutingDecision? paired = null;
+        if (input.Gesture == InputGesture.Released
+            && _activePresses.TryGetValue(control, out paired))
+        {
+            // 使用按下时保存的绑定结束会话，前台切换和配置编辑不会改变释放目标。
+            try
+            {
+                await ExecuteBindingAsync(paired.Binding!, input, cancellationToken);
+                _activePresses.Remove(control);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                await PlayHapticAsync(input.DeviceId, _options.FailureFeedback, cancellationToken);
+                return new ExecutionOutcome(RoutingStatus.Matched, paired.Profile, paired.Binding, false, ex.Message);
+            }
+        }
+
         if (IsPaused)
         {
-            return new ExecutionOutcome(RoutingStatus.Paused, null, null, false);
+            return new ExecutionOutcome(RoutingStatus.Paused, paired?.Profile, paired?.Binding, paired is not null);
         }
 
         var decision = await _router.RouteAsync(input, cancellationToken);
+
+        if (paired is not null && decision.Binding?.Trigger.Gesture != InputGesture.Released)
+        {
+            await PlayHapticAsync(input.DeviceId, paired.Binding!.Feedback ?? _options.SuccessFeedback, cancellationToken);
+            return new ExecutionOutcome(RoutingStatus.Matched, paired.Profile, paired.Binding, true);
+        }
 
         if (decision.Status is RoutingStatus.NoProfile or RoutingStatus.NoBinding)
         {
@@ -90,7 +134,24 @@ public sealed class RoutingEngine
         var binding = decision.Binding!;
         try
         {
-            var executed = await ExecuteBindingAsync(binding, input, cancellationToken);
+            if (binding.Trigger.Gesture != input.Gesture)
+            {
+                return new ExecutionOutcome(RoutingStatus.Matched, decision.Profile, binding, paired is not null);
+            }
+
+            var needsPair = input.Gesture == InputGesture.Pressed
+                && (binding.Action is KeyboardShortcutAction { KeyDownOnly: true } or SpeechToolAction);
+            if (needsPair && _activePresses.ContainsKey(control))
+            {
+                return new ExecutionOutcome(RoutingStatus.Matched, decision.Profile, binding, false);
+            }
+
+            var executionBinding = needsPair ? binding with { Id = Guid.NewGuid() } : binding;
+            var executed = await ExecuteBindingAsync(executionBinding, input, cancellationToken);
+            if (executed && needsPair)
+            {
+                _activePresses[control] = decision with { Binding = executionBinding };
+            }
             if (executed)
             {
                 // 仅在实际执行了输出动作（含配对抬起、语音会话结束）时提供反馈，
@@ -120,6 +181,20 @@ public sealed class RoutingEngine
     /// </summary>
     public async ValueTask ReleaseAllAsync(CancellationToken cancellationToken = default)
     {
+        await _eventGate.WaitAsync(cancellationToken);
+        try
+        {
+            await ReleaseAllCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _eventGate.Release();
+        }
+    }
+
+    private async ValueTask ReleaseAllCoreAsync(CancellationToken cancellationToken)
+    {
+        _activePresses.Clear();
         List<List<string>> pending;
         List<SpeechToolSession> sessions;
         lock (_sync)
@@ -199,7 +274,7 @@ public sealed class RoutingEngine
                 return false;
 
             case KeyboardShortcutAction keyboard when keyboard.KeyUpOnly:
-                if (input.Gesture == InputGesture.Pressed)
+                if (input.Gesture == binding.Trigger.Gesture)
                 {
                     await _executor.ExecuteAsync(keyboard, cancellationToken);
                     return true;
@@ -208,7 +283,7 @@ public sealed class RoutingEngine
                 return false;
 
             case KeyboardShortcutAction keyboard:
-                if (input.Gesture == InputGesture.Released)
+                if (input.Gesture == InputGesture.Released && binding.Trigger.Gesture != InputGesture.Released)
                 {
                     return false;
                 }
@@ -274,7 +349,12 @@ public sealed class RoutingEngine
                 return false;
 
             case LaunchApplicationAction launch:
-                if (input.Gesture == InputGesture.Pressed)
+                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding))
+                {
+                    return false;
+                }
+
+                if (input.Gesture == binding.Trigger.Gesture)
                 {
                     await _executor.ExecuteAsync(launch, cancellationToken);
                     return true;
@@ -283,7 +363,7 @@ public sealed class RoutingEngine
                 return false;
 
             case MouseAction mouse:
-                if (input.Gesture == InputGesture.Released)
+                if (input.Gesture == InputGesture.Released && binding.Trigger.Gesture != InputGesture.Released)
                 {
                     return false;
                 }
@@ -297,7 +377,7 @@ public sealed class RoutingEngine
                 return true;
 
             case MediaKeyAction media:
-                if (input.Gesture == InputGesture.Released)
+                if (input.Gesture == InputGesture.Released && binding.Trigger.Gesture != InputGesture.Released)
                 {
                     return false;
                 }

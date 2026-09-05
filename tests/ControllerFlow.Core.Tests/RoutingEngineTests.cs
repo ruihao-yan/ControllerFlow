@@ -388,4 +388,106 @@ public sealed class RoutingEngineTests
         await Assert.ThrowsAsync<ArgumentNullException>(
             () => engine.HandleAsync(null!).AsTask());
     }
+    [Fact]
+    public async Task Release_AfterForegroundChange_ReleasesOriginalKeys()
+    {
+        ForegroundApp? current = AnyApp;
+        var binding = TestProfiles.Binding("A", action: new KeyboardShortcutAction(["Ctrl"], KeyDownOnly: true));
+        var profile = TestProfiles.AppProfile("App", new AppMatchRule(ProcessName: AnyApp.ProcessName), bindings: [binding]);
+        var router = new ProfileRouter(new ScriptedForegroundAppProvider(() => current), new StubProfileRepository([profile]));
+        var engine = new RoutingEngine(router, _executor);
+        await engine.HandleAsync(Event("A", InputGesture.Pressed));
+        current = null;
+
+        var result = await engine.HandleAsync(Event("A", InputGesture.Released));
+
+        Assert.True(result.ActionExecuted);
+        Assert.True(Assert.IsType<KeyboardShortcutAction>(_executor.Executed[1]).KeyUpOnly);
+        await engine.ReleaseAllAsync();
+        Assert.Equal(2, _executor.Executed.Count);
+    }
+
+    [Fact]
+    public async Task Release_WithExplicitBinding_CleansUpBeforeExecutingReleaseAction()
+    {
+        var engine = CreateEngine(
+            TestProfiles.Binding("A", action: new KeyboardShortcutAction(["Ctrl"], KeyDownOnly: true)),
+            TestProfiles.Binding("A", InputGesture.Released, new KeyboardShortcutAction(["C"])));
+        await engine.HandleAsync(Event("A", InputGesture.Pressed));
+
+        await engine.HandleAsync(Event("A", InputGesture.Released));
+
+        Assert.Equal(3, _executor.Executed.Count);
+        Assert.True(Assert.IsType<KeyboardShortcutAction>(_executor.Executed[1]).KeyUpOnly);
+        Assert.Equal(["C"], Assert.IsType<KeyboardShortcutAction>(_executor.Executed[2]).Keys);
+    }
+
+    [Fact]
+    public async Task Release_WhilePaused_CleansUpActivePress()
+    {
+        var engine = CreateEngine(TestProfiles.Binding("A", action: new KeyboardShortcutAction(["Ctrl"], KeyDownOnly: true)));
+        await engine.HandleAsync(Event("A", InputGesture.Pressed));
+        engine.IsPaused = true;
+
+        var result = await engine.HandleAsync(Event("A", InputGesture.Released));
+
+        Assert.True(result.ActionExecuted);
+        Assert.True(Assert.IsType<KeyboardShortcutAction>(_executor.Executed[1]).KeyUpOnly);
+    }
+
+    [Fact]
+    public async Task ExplicitRelease_ExecutesKeyboardMouseMediaAndLaunch()
+    {
+        OutputAction[] actions = [
+            new KeyboardShortcutAction(["C"]),
+            new MouseAction(MouseOperation.ScrollVertical, -120),
+            new MediaKeyAction(KeyCode.VolumeUp),
+            new LaunchApplicationAction("app.exe")];
+        foreach (var action in actions)
+        {
+            var engine = CreateEngine(TestProfiles.Binding("A", InputGesture.Released, action));
+            Assert.False((await engine.HandleAsync(Event("A", InputGesture.Pressed))).ActionExecuted);
+            Assert.True((await engine.HandleAsync(Event("A", InputGesture.Released))).ActionExecuted);
+        }
+        Assert.Equal(actions, _executor.Executed);
+    }
+
+    [Fact]
+    public async Task TapRelease_DoesNotRepeatPressAction()
+    {
+        var engine = CreateEngine(TestProfiles.Binding("A"));
+        await engine.HandleAsync(Event("A", InputGesture.Pressed));
+        Assert.False((await engine.HandleAsync(Event("A", InputGesture.Released))).ActionExecuted);
+        Assert.Single(_executor.Executed);
+    }
+
+    [Fact]
+    public async Task Speech_AfterForegroundChange_StopsOriginalSession()
+    {
+        ForegroundApp? current = AnyApp;
+        var binding = TestProfiles.Binding("A", action: new SpeechToolAction(
+            new KeyboardShortcutAction([]), new KeyboardShortcutAction([]), "stt.exe"));
+        var profile = TestProfiles.AppProfile("App", new AppMatchRule(ProcessName: AnyApp.ProcessName), bindings: [binding]);
+        var engine = new RoutingEngine(new ProfileRouter(
+            new ScriptedForegroundAppProvider(() => current), new StubProfileRepository([profile])),
+            _executor, speechToolController: _speechTool);
+        await engine.HandleAsync(Event("A", InputGesture.Pressed));
+        current = null;
+        await engine.HandleAsync(Event("A", InputGesture.Released));
+        Assert.Equal(Assert.Single(_speechTool.Started), Assert.Single(_speechTool.Stopped));
+    }
+
+    [Fact]
+    public async Task Speech_TwoDevices_ReleaseOnlyTheirOwnSessions()
+    {
+        var engine = CreateEngine(TestProfiles.Binding("A", action: new SpeechToolAction(
+            new KeyboardShortcutAction([]), new KeyboardShortcutAction([]), "stt.exe")));
+        await engine.HandleAsync(Event("A", InputGesture.Pressed));
+        await engine.HandleAsync(Event("A", InputGesture.Pressed) with { DeviceId = "pad-2" });
+        await engine.HandleAsync(Event("A", InputGesture.Released));
+        Assert.Equal(_speechTool.Started[0], Assert.Single(_speechTool.Stopped));
+        await engine.HandleAsync(Event("A", InputGesture.Released) with { DeviceId = "pad-2" });
+        Assert.Equal(_speechTool.Started, _speechTool.Stopped);
+    }
+
 }
