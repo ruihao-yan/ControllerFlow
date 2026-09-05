@@ -78,7 +78,7 @@
                             <GroupBox Header="目标应用规则（命中任一规则即启用本 Profile）" Padding="8" Margin="0,8,0,0">
                                 <DockPanel>
                                     <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
-                                        <Button Content="拾取当前前台窗口" Click="OnPickForegroundClick" />
+                                        <Button Content="3 秒后拾取前台窗口" Click="OnPickForegroundClick" />
                                         <Button Content="添加规则" Margin="6,0,0,0" Click="OnAddRuleClick" />
                                         <TextBlock Text="（拾取会填入进程名与完整路径）" VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#777777" />
                                     </StackPanel>
@@ -284,7 +284,7 @@
                         <TextBlock FontSize="20" FontWeight="SemiBold" Text="快速开始" />
                         <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" LineHeight="26">
                             1. 连接手柄：支持 XInput 兼容手柄（Xbox / 主流国产手柄），即插即用，热插拔自动识别。&#x0a;
-                            2. 新建 Profile：为目标软件创建配置（名称、优先级），点击「拾取当前前台窗口」自动填入进程名与路径规则。&#x0a;
+                            2. 新建 Profile：为目标软件创建配置（名称、优先级），点击「3 秒后拾取前台窗口」自动填入进程名与路径规则。&#x0a;
                             3. 添加按键映射：选择要使用的手柄控件，点「捕获按键…」后按下手柄按键即可填入；配置输出动作（组合键 / 鼠标 / 媒体键 / 启动程序 / 语音）。&#x0a;
                             4. 语音转文字：快捷键模式配置「开始 / 停止」快捷键（开始用 KeyDownOnly 实现按住说话）；或配置工具路径进入进程模式（按住启动工具、松开结束）。&#x0a;
                             5. 保存全部：通过校验（错误以红色问题列出）后写入 %LocalAppData%\ControllerFlow\profiles.json。&#x0a;
