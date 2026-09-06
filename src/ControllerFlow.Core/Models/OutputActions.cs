@@ -18,7 +18,6 @@ public enum MouseOperation
 [JsonDerivedType(typeof(MouseAction), "mouse")]
 [JsonDerivedType(typeof(MediaKeyAction), "mediaKey")]
 [JsonDerivedType(typeof(LaunchApplicationAction), "launchApplication")]
-[JsonDerivedType(typeof(SpeechToolAction), "speechTool")]
 public abstract record OutputAction;
 
 /// <summary>
@@ -46,19 +45,4 @@ public sealed record MediaKeyAction(
 
 public sealed record LaunchApplicationAction(
     string ExecutablePath,
-    string? Arguments = null) : OutputAction;
-
-/// <summary>
-/// 语音转文字动作，支持两种工作方式：
-/// <list type="bullet">
-/// <item>快捷键模式（默认，<see cref="ExecutablePath"/> 为空）：引擎在映射键按下时执行 <see cref="Start"/>，
-/// 释放时执行 <see cref="Stop"/>。Start 的 KeyDownOnly 决定“按住说话”（键按下保持）还是“点按切换”。</item>
-/// <item>进程模式（配置 <see cref="ExecutablePath"/>）：按下时启动本地语音转文字工具进程，
-/// 松开时结束该进程（先优雅关闭，超时后强制终止）。此模式下 Start / Stop 快捷键被忽略。</item>
-/// </list>
-/// </summary>
-public sealed record SpeechToolAction(
-    KeyboardShortcutAction Start,
-    KeyboardShortcutAction Stop,
-    string? ExecutablePath = null,
     string? Arguments = null) : OutputAction;

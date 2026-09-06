@@ -98,11 +98,11 @@ public sealed class GamepadInputTrackerTests
         var tracker = CreateTracker(holdThreshold: 400, repeatInterval: 100);
         Press(tracker, "pad-1", GamepadControls.A);
 
-        // 按下确认后满 400ms：补齐长按期间缺失的重复（每 100ms 一次）。
+        // 按下确认后满 400ms：只产生一次 Held，重复从长按阈值开始计时。
         _time.Advance(TimeSpan.FromMilliseconds(400));
         var first = tracker.ProcessFrame(Frame(GamepadControls.A), "pad-1");
-        Assert.Equal(4, first.Count);
-        Assert.All(first, e => Assert.Equal(InputGesture.Held, e.Gesture));
+        var held1 = Assert.Single(first);
+        Assert.Equal(InputGesture.Held, held1.Gesture);
 
         // 未满重复间隔：无新事件。
         _time.Advance(TimeSpan.FromMilliseconds(50));
@@ -120,16 +120,30 @@ public sealed class GamepadInputTrackerTests
     }
 
     [Fact]
+    public void ProcessFrame_RbLongHold_EmitsFirstHeldOnce()
+    {
+        var tracker = CreateTracker(holdThreshold: 400, repeatInterval: 100);
+        Press(tracker, "pad-1", GamepadControls.RightBumper);
+
+        _time.Advance(TimeSpan.FromMilliseconds(400));
+        var events = tracker.ProcessFrame(Frame(GamepadControls.RightBumper), "pad-1");
+
+        var held = Assert.Single(events);
+        Assert.Equal(GamepadControls.RightBumper, held.ControlId);
+        Assert.Equal(InputGesture.Held, held.Gesture);
+    }
+
+    [Fact]
     public void ProcessFrame_LargeFrameGap_FillsMissingHeldEvents()
     {
         var tracker = CreateTracker(holdThreshold: 400, repeatInterval: 100);
         Press(tracker, "pad-1", GamepadControls.A);
 
-        // 帧间隔不稳定：一次推进 950ms，应补齐 115/215/…/915 共 9 个 Held（有上限保护）。
+        // 帧间隔不稳定：一次推进 950ms，应补齐 400/500/…/900 共 6 个 Held（有上限保护）。
         _time.Advance(TimeSpan.FromMilliseconds(950));
         var events = tracker.ProcessFrame(Frame(GamepadControls.A), "pad-1");
 
-        Assert.Equal(9, events.Count);
+        Assert.Equal(6, events.Count);
         Assert.All(events, e => Assert.Equal(InputGesture.Held, e.Gesture));
     }
 

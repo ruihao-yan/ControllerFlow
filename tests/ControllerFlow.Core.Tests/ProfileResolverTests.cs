@@ -23,6 +23,27 @@ public sealed class ProfileResolverTests
     }
 
     [Fact]
+    public async Task ResolveAsync_VibeCodingProfileMatchesChatGptAfterPackageUpdate()
+    {
+        var vibeCoding = TestProfiles.AppProfile(
+            "vibe coding",
+            new AppMatchRule(
+                ProcessName: "ChatGPT",
+                ExecutablePath: @"G:\WindowsApps\OpenAI.Codex_26.901.5003.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"));
+        var resolver = new ProfileResolver(new StubProfileRepository([vibeCoding]));
+        var currentChatGpt = new ForegroundApp(
+            36064,
+            "ChatGPT",
+            @"C:\Program Files\WindowsApps\OpenAI.Codex_26.901.6511.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe",
+            "ChatGPT");
+
+        var result = await resolver.ResolveAsync(currentChatGpt);
+
+        Assert.Equal(vibeCoding.Id, result.Profile?.Id);
+        Assert.False(result.UsedDefaultFallback);
+    }
+
+    [Fact]
     public async Task ResolveAsync_FallsBackToDefaultProfile()
     {
         var resolver = new ProfileResolver(new StubProfileRepository(

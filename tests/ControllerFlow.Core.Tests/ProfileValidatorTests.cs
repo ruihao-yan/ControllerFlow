@@ -143,20 +143,18 @@ public sealed class ProfileValidatorTests
     }
 
     [Fact]
-    public void Validate_HeldWithKeyDownOnly_Warning()
+    public void Validate_HeldWithKeyDownOnly_IsValid()
     {
         var profiles = new[]
         {
             TestProfiles.DefaultProfile(TestProfiles.Binding("A",
                 gesture: InputGesture.Held,
-                holdMilliseconds: 50,
                 action: new KeyboardShortcutAction(["Ctrl"], KeyDownOnly: true)))
         };
 
         var issues = _validator.Validate(profiles);
 
-        Assert.Contains(issues, i => i.Severity == ProfileValidationSeverity.Warning
-            && i.Message.Contains("长按触发不重复执行", StringComparison.Ordinal));
+        Assert.DoesNotContain(issues, issue => issue.Severity == ProfileValidationSeverity.Error);
     }
 
     [Fact]
@@ -199,85 +197,6 @@ public sealed class ProfileValidatorTests
         var issues = _validator.Validate(profiles);
 
         Assert.Contains(issues, i => i.Message.Contains("媒体键动作无效", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Validate_SpeechHotkeyMode_Valid()
-    {
-        var profiles = new[]
-        {
-            TestProfiles.DefaultProfile(TestProfiles.Binding("A",
-                action: new SpeechToolAction(
-                    new KeyboardShortcutAction(["Ctrl", "Space"], KeyDownOnly: true),
-                    new KeyboardShortcutAction(["Ctrl", "Space"]))))
-        };
-
-        Assert.Empty(_validator.Validate(profiles));
-    }
-
-    [Fact]
-    public void Validate_SpeechStopWithoutKeys_Error()
-    {
-        var profiles = new[]
-        {
-            TestProfiles.DefaultProfile(TestProfiles.Binding("A",
-                action: new SpeechToolAction(
-                    new KeyboardShortcutAction(["Ctrl", "Space"]),
-                    new KeyboardShortcutAction([]))))
-        };
-
-        var issues = _validator.Validate(profiles);
-
-        Assert.Contains(issues, i => i.Message.Contains("「停止」快捷键没有配置按键", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Validate_SpeechInvalidKeyName_Error()
-    {
-        var profiles = new[]
-        {
-            TestProfiles.DefaultProfile(TestProfiles.Binding("A",
-                action: new SpeechToolAction(
-                    new KeyboardShortcutAction(["BadKey"]),
-                    new KeyboardShortcutAction(["Space"]))))
-        };
-
-        var issues = _validator.Validate(profiles);
-
-        Assert.Contains(issues, i => i.Message.Contains("「开始」快捷键包含无法识别的按键名", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void Validate_SpeechProcessMode_ValidWithoutShortcuts()
-    {
-        var profiles = new[]
-        {
-            TestProfiles.DefaultProfile(TestProfiles.Binding("A",
-                action: new SpeechToolAction(
-                    new KeyboardShortcutAction([]),
-                    new KeyboardShortcutAction([]),
-                    ExecutablePath: @"C:\tools\stt.exe")))
-        };
-
-        Assert.Empty(_validator.Validate(profiles));
-    }
-
-    [Fact]
-    public void Validate_SpeechProcessModeWithShortcuts_Warning()
-    {
-        var profiles = new[]
-        {
-            TestProfiles.DefaultProfile(TestProfiles.Binding("A",
-                action: new SpeechToolAction(
-                    new KeyboardShortcutAction(["Ctrl", "Space"]),
-                    new KeyboardShortcutAction(["Space"]),
-                    ExecutablePath: @"C:\tools\stt.exe")))
-        };
-
-        var issues = _validator.Validate(profiles);
-
-        Assert.Contains(issues, i => i.Severity == ProfileValidationSeverity.Warning
-            && i.Message.Contains("将使用工具路径", StringComparison.Ordinal));
     }
 
     [Fact]

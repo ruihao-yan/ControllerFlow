@@ -13,17 +13,16 @@ English version: [README.en.md](README.en.md)
 - 用户创建 Profile，选择目标软件并配置手柄按键映射。
 - 手柄输入通过 Router 按当前前台应用匹配 Profile，无匹配时使用默认 Profile。
 - 支持键盘组合键、鼠标、媒体键、启动程序等输出动作。
-- 按住映射键调用本地语音转文字工具，松开时结束。
 - 映射执行后触发手柄震动反馈，反馈参数可随 Binding 配置。
 - 前台应用变化时自动切换 Profile。
 
 ## 当前完成度
 
 1. **工程骨架与核心边界** — WPF App、Core、Windows Infrastructure、Core/Windows Tests 四个项目；领域模型、端口接口、Profile 路由
-2. **手柄输入层** — `Windows.Gaming.Input` 读取（`ControllerFlow.Windows/Input`），Core 侧 `GamepadInputTracker` 统一为按下/释放/长按事件，含死区、抖动与重复触发处理
+2. **手柄输入层** — 优先使用 XInput，其他设备回退到 `Windows.Gaming.Input`（`ControllerFlow.Windows/Input`）；Core 侧 `GamepadInputTracker` 统一为按下/释放/长按事件，含死区、抖动与重复触发处理
 3. **前台应用与 Router** — Win32 前台窗口获取（进程名/路径/标题），`AppRuleMatcher` 正则匹配，前台切换时自动切换 Profile
 4. **用户映射与输出层** — Profile/Binding JSON 读写、校验、导入导出（`Profiles/JsonProfileStore`、`ProfileValidator`、`ProfileEditorService`），键盘组合键、鼠标、媒体键、启动程序等输出（`Output/Win32ActionExecutor`），按下/释放配对
-5. **语音方案** — 按住映射键调用本地语音转文字工具，松开结束（`Speech/SpeechToolProcessController` + Core 端口）
+5. **配置迁移** — 读取旧版本语音动作时自动转换可迁移快捷键，无法迁移的绑定会停用并保留备份
 6. **震动反馈** — 成功/无匹配/执行失败三类反馈，支持每条 Binding 覆盖强度与时长（`Haptics/GamepadHapticFeedback`）
 7. **桌面体验** — Profile 编辑、按键捕获、目标 App 拾取、托盘（`Desktop/TrayIcon`）、开机自启（`StartupRegistration`）、自检（`Diagnostics/AppSelfCheck`）、日志（`Logging/FileLog`）
 8. **交付** — 单元测试（Core 139 个 + Windows 6 个，全部通过）、`scripts/publish-win-x64.ps1` 发布脚本
@@ -34,8 +33,8 @@ English version: [README.en.md](README.en.md)
 dotnet test ControllerFlow.sln
 ```
 
-- ControllerFlow.Core.Tests：139 个测试
-- ControllerFlow.Windows.Tests：6 个测试
+- ControllerFlow.Core.Tests：包含路由、输入归一化、配置迁移与快捷键录入测试
+- ControllerFlow.Windows.Tests：包含 Windows 能力与硬件诊断测试
 
 ## 技术基线
 

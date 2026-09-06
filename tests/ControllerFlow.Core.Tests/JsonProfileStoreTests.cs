@@ -36,6 +36,140 @@ public sealed class JsonProfileStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task LoadAsync_MigratesLegacySpeechHotkeyAndCreatesBackup()
+    {
+        var path = Path.Combine(_tempDirectory, "profiles.json");
+        Directory.CreateDirectory(_tempDirectory);
+        var json =
+            """
+            {
+              "version": 1,
+              "profiles": [
+                {
+                  "id": "11111111-1111-1111-1111-111111111111",
+                  "name": "旧配置",
+                  "priority": 0,
+                  "isDefault": true,
+                  "appRules": [],
+                  "bindings": [
+                    {
+                      "id": "22222222-2222-2222-2222-222222222222",
+                      "trigger": { "controlId": "RB", "gesture": "pressed" },
+                      "action": {
+                        "type": "speechTool",
+                        "start": { "type": "keyboardShortcut", "keys": ["Ctrl", "Space"], "keyDownOnly": true },
+                        "stop": { "type": "keyboardShortcut", "keys": ["Ctrl", "Space"] }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+        await File.WriteAllTextAsync(path, json);
+
+        var store = CreateStore();
+        var profiles = await store.LoadAsync();
+
+        var bindings = Assert.Single(profiles).Bindings;
+        Assert.Equal(2, bindings.Count);
+
+        var start = bindings[0];
+        Assert.Equal(InputGesture.Pressed, start.Trigger.Gesture);
+        var startAction = Assert.IsType<KeyboardShortcutAction>(start.Action);
+        Assert.Equal(["Ctrl", "Space"], startAction.Keys);
+        Assert.True(startAction.KeyDownOnly);
+
+        var stop = bindings[1];
+        Assert.Equal(InputGesture.Released, stop.Trigger.Gesture);
+        Assert.Equal(["Ctrl", "Space"], Assert.IsType<KeyboardShortcutAction>(stop.Action).Keys);
+        Assert.NotEqual(start.Id, stop.Id);
+        Assert.NotEmpty(store.LastMigrationWarnings);
+        Assert.Single(Directory.GetFiles(_tempDirectory, "*.before-speech-removal.json"));
+    }
+
+    [Fact]
+    public async Task LoadAsync_DisablesLegacySpeechProcessAction()
+    {
+        var path = Path.Combine(_tempDirectory, "profiles.json");
+        Directory.CreateDirectory(_tempDirectory);
+        var json =
+            """
+            {
+              "version": 1,
+              "profiles": [
+                {
+                  "id": "11111111-1111-1111-1111-111111111111",
+                  "name": "旧配置",
+                  "priority": 0,
+                  "isDefault": true,
+                  "appRules": [],
+                  "bindings": [
+                    {
+                      "id": "22222222-2222-2222-2222-222222222222",
+                      "trigger": { "controlId": "RB", "gesture": "pressed" },
+                      "action": {
+                        "type": "speechTool",
+                        "start": { "type": "keyboardShortcut", "keys": [] },
+                        "stop": { "type": "keyboardShortcut", "keys": [] },
+                        "executablePath": "C:/tools/stt.exe"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+        await File.WriteAllTextAsync(path, json);
+
+        var profiles = await CreateStore().LoadAsync();
+        var binding = Assert.Single(Assert.Single(profiles).Bindings);
+
+        Assert.False(binding.Enabled);
+        Assert.Equal(["F24"], Assert.IsType<KeyboardShortcutAction>(binding.Action).Keys);
+    }
+
+    [Fact]
+    public async Task LoadAsync_DisablesLegacySpeechHotkeyWhenShortcutIsEmpty()
+    {
+        var path = Path.Combine(_tempDirectory, "profiles.json");
+        Directory.CreateDirectory(_tempDirectory);
+        var json =
+            """
+            {
+              "version": 1,
+              "profiles": [
+                {
+                  "id": "11111111-1111-1111-1111-111111111111",
+                  "name": "旧配置",
+                  "priority": 0,
+                  "isDefault": true,
+                  "appRules": [],
+                  "bindings": [
+                    {
+                      "id": "22222222-2222-2222-2222-222222222222",
+                      "trigger": { "controlId": "RB", "gesture": "pressed" },
+                      "action": {
+                        "type": "speechTool",
+                        "start": { "type": "keyboardShortcut", "keys": [] },
+                        "stop": { "type": "keyboardShortcut", "keys": ["Space"] }
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
+        await File.WriteAllTextAsync(path, json);
+
+        var profiles = await CreateStore().LoadAsync();
+        var binding = Assert.Single(Assert.Single(profiles).Bindings);
+
+        Assert.False(binding.Enabled);
+        Assert.Equal(["F24"], Assert.IsType<KeyboardShortcutAction>(binding.Action).Keys);
+    }
+
+    [Fact]
     public async Task SaveAndLoad_RoundTripsProfiles()
     {
         var store = CreateStore();
@@ -78,14 +212,7 @@ public sealed class JsonProfileStoreTests : IDisposable
                 TestProfiles.Binding("X", action: new MouseAction(MouseOperation.ScrollVertical, Amount: 240)),
                 TestProfiles.Binding("Y", action: new MediaKeyAction(KeyCode.VolumeUp)),
                 TestProfiles.Binding("LB", action: new LaunchApplicationAction(@"C:\tools\app.exe", "--fast")),
-                TestProfiles.Binding("RB", action: new SpeechToolAction(
-                    new KeyboardShortcutAction(["Ctrl", "Space"], KeyDownOnly: true),
-                    new KeyboardShortcutAction(["Ctrl", "Space"]))),
-                TestProfiles.Binding("Menu", action: new SpeechToolAction(
-                    new KeyboardShortcutAction([]),
-                    new KeyboardShortcutAction([]),
-                    ExecutablePath: @"C:\tools\stt.exe",
-                    Arguments: "--push-to-talk")))
+                TestProfiles.Binding("RB", action: new KeyboardShortcutAction(["Ctrl", "Space"])))
         };
 
         await store.SaveAsync(original);
@@ -99,14 +226,7 @@ public sealed class JsonProfileStoreTests : IDisposable
         Assert.Equal(240, Assert.IsType<MouseAction>(profile.Bindings[2].Action).Amount);
         Assert.Equal(KeyCode.VolumeUp, Assert.IsType<MediaKeyAction>(profile.Bindings[3].Action).Key);
         Assert.Equal(@"C:\tools\app.exe", Assert.IsType<LaunchApplicationAction>(profile.Bindings[4].Action).ExecutablePath);
-
-        var hotkeySpeech = Assert.IsType<SpeechToolAction>(profile.Bindings[5].Action);
-        Assert.Null(hotkeySpeech.ExecutablePath);
-        Assert.True(hotkeySpeech.Start.KeyDownOnly);
-
-        var processSpeech = Assert.IsType<SpeechToolAction>(profile.Bindings[6].Action);
-        Assert.Equal(@"C:\tools\stt.exe", processSpeech.ExecutablePath);
-        Assert.Equal("--push-to-talk", processSpeech.Arguments);
+        Assert.Equal(["Ctrl", "Space"], Assert.IsType<KeyboardShortcutAction>(profile.Bindings[5].Action).Keys);
     }
 
     [Fact]

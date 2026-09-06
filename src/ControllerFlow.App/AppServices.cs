@@ -9,7 +9,6 @@ using ControllerFlow.Windows.Haptics;
 using ControllerFlow.Windows.Input;
 using ControllerFlow.Windows.Logging;
 using ControllerFlow.Windows.Output;
-using ControllerFlow.Windows.Speech;
 using System.IO;
 
 namespace ControllerFlow.App;
@@ -57,8 +56,7 @@ public sealed class AppServices
             executor,
             haptic: new GamepadHapticFeedback(),
             options: RoutingEngineOptions.Default,
-            timeProvider: TimeProvider.System,
-            speechToolController: new SpeechToolProcessController());
+            timeProvider: TimeProvider.System);
 
         return new AppServices
         {
@@ -94,7 +92,7 @@ public sealed class AppServices
         }
     }
 
-    /// <summary>停止输入源并释放引擎保持的按键 / 语音会话，避免组合键卡住。</summary>
+    /// <summary>停止输入源并释放引擎保持的按键，避免组合键卡住。</summary>
     public async Task ShutdownAsync(CancellationToken cancellationToken)
     {
         FileLog.Info("ControllerFlow 退出中。");

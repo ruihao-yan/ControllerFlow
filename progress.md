@@ -11,10 +11,10 @@
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | 1 | 工程骨架与核心边界（WPF App / Core / Windows / Tests，领域模型、端口、路由） | 完成 |
-| 2 | 手柄输入层（Windows.Gaming.Input、按下/释放/长按、死区与抖动处理） | 完成 |
+| 2 | 手柄输入层（XInput、Windows.Gaming.Input 回退、按下/释放/长按、死区与抖动处理） | 完成 |
 | 3 | 前台应用与 Router（Win32 前台窗口、正则匹配、前台切换 Profile） | 完成 |
 | 4 | 用户映射与输出层（JSON 读写校验、键盘/鼠标/媒体/程序输出、按下释放配对） | 完成 |
-| 5 | 语音方案（按住调用本地语音工具，松开结束） | 完成 |
+| 5 | 旧语音动作配置迁移与停用处理 | 完成 |
 | 6 | 震动反馈（成功/无匹配/失败三类，Binding 可覆盖强度时长） | 完成 |
 | 7 | 桌面体验（Profile 编辑、按键捕获、托盘、开机自启、自检、日志） | 完成 |
 | 8 | 交付（单元测试、发布脚本 scripts/publish-win-x64.ps1、README） | 完成 |
@@ -29,7 +29,7 @@
 ## 结构说明
 
 - `src/ControllerFlow.Core`：领域模型、端口、路由、引擎，不依赖 Windows API
-- `src/ControllerFlow.Windows`：Windows 能力封装（手柄、Win32、震动、语音、托盘）
+- `src/ControllerFlow.Windows`：Windows 能力封装（手柄、Win32、震动、托盘）
 - `src/ControllerFlow.App`：WPF 桌面应用
 - `tests/`：单元测试（Core / Windows）
 

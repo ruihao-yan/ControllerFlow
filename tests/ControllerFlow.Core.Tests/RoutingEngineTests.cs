@@ -1,4 +1,5 @@
 using ControllerFlow.Core.Engine;
+using ControllerFlow.Core.Input;
 using ControllerFlow.Core.Models;
 using ControllerFlow.Core.Ports;
 using ControllerFlow.Core.Routing;
@@ -12,7 +13,6 @@ public sealed class RoutingEngineTests
 
     private readonly RecordingExecutor _executor = new();
     private readonly RecordingHaptic _haptic = new();
-    private readonly RecordingSpeechTool _speechTool = new();
 
     private static readonly ForegroundApp AnyApp = new(1, "any-app", null, "窗口");
 
@@ -35,8 +35,7 @@ public sealed class RoutingEngineTests
             _executor,
             _haptic,
             defaultOptions ?? RoutingEngineOptions.Default,
-            _time,
-            _speechTool);
+            _time);
     }
 
     private static ControllerInputEvent Event(string controlId, InputGesture gesture) =>
@@ -54,15 +53,17 @@ public sealed class RoutingEngineTests
         Assert.Null(outcome.Error);
         var action = Assert.Single(_executor.Executed);
         Assert.Equal(["Ctrl", "C"], Assert.IsType<KeyboardShortcutAction>(action).Keys);
-        Assert.True(_haptic.Played.Count == 1, "按下成功应触发默认成功震动。");
+        Assert.Empty(_haptic.Played);
     }
 
     [Fact]
     public async Task HandleAsync_KeyDownOnly_HoldsAndPairsRelease()
     {
+        var feedback = new HapticPattern(0.3, 0.3, TimeSpan.FromMilliseconds(50));
         var engine = CreateEngine(TestProfiles.Binding(
             "A",
-            action: new KeyboardShortcutAction(["Ctrl", "Alt"], KeyDownOnly: true)));
+            action: new KeyboardShortcutAction(["Ctrl", "Alt"], KeyDownOnly: true),
+            feedback: feedback));
 
         var press = await engine.HandleAsync(Event("A", InputGesture.Pressed));
         Assert.True(press.ActionExecuted);
@@ -77,6 +78,245 @@ public sealed class RoutingEngineTests
         Assert.True(keyUp.KeyUpOnly);
         Assert.False(keyUp.KeyDownOnly);
         Assert.Equal(["Ctrl", "Alt"], keyUp.Keys);
+        Assert.Equal(feedback, Assert.Single(_haptic.Played).Pattern);
+    }
+
+    [Fact]
+    public async Task HandleAsync_VibeCodingProfile_RbHeldExecutesConfiguredShortcut()
+    {
+        var binding = TestProfiles.Binding(
+            GamepadControls.RightBumper,
+            gesture: InputGesture.Held,
+            holdMilliseconds: 100,
+            action: new KeyboardShortcutAction(["Ctrl", "Shift", "P"]));
+        var profile = TestProfiles.AppProfile(
+            "vibe coding",
+            new AppMatchRule(ProcessName: AnyApp.ProcessName),
+            bindings: [binding]);
+        var router = new ProfileRouter(
+            new StubForegroundAppProvider(AnyApp),
+            new StubProfileRepository([profile]));
+        var engine = new RoutingEngine(router, _executor, timeProvider: _time);
+
+        var outcome = await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Held));
+
+        Assert.True(outcome.ActionExecuted);
+        Assert.Equal(profile.Id, outcome.Profile!.Id);
+        Assert.Equal(["Ctrl", "Shift", "P"], Assert.IsType<KeyboardShortcutAction>(Assert.Single(_executor.Executed)).Keys);
+    }
+
+    [Fact]
+    public async Task HandleAsync_VibeCodingRbLongHold_ExecutesOnceWhenThresholdIsReached()
+    {
+        var binding = TestProfiles.Binding(
+            GamepadControls.RightBumper,
+            gesture: InputGesture.Held,
+            action: new KeyboardShortcutAction(["Ctrl", "P"]));
+        var profile = TestProfiles.AppProfile(
+            "vibe coding",
+            new AppMatchRule(ProcessName: AnyApp.ProcessName),
+            bindings: [binding]);
+        var engine = new RoutingEngine(
+            new ProfileRouter(
+                new StubForegroundAppProvider(AnyApp),
+                new StubProfileRepository([profile])),
+            _executor,
+            timeProvider: _time);
+        var tracker = new GamepadInputTracker(
+            new GamepadInputTrackerOptions
+            {
+                DebounceMilliseconds = 15,
+                HoldThresholdMilliseconds = 400,
+                HoldRepeatIntervalMilliseconds = 100
+            },
+            _time);
+        var frame = new GamepadFrame(
+            new HashSet<string> { GamepadControls.RightBumper });
+
+        Assert.Empty(tracker.ProcessFrame(frame, "pad-1"));
+        _time.Advance(TimeSpan.FromMilliseconds(15));
+        var press = Assert.Single(tracker.ProcessFrame(frame, "pad-1"));
+        Assert.Equal(InputGesture.Pressed, press.Gesture);
+        _ = await engine.HandleAsync(press);
+
+        _time.Advance(TimeSpan.FromMilliseconds(400));
+        var held = tracker.ProcessFrame(frame, "pad-1");
+        Assert.Single(held);
+        var outcome = await engine.HandleAsync(held[0]);
+
+        Assert.True(outcome.ActionExecuted);
+
+        _time.Advance(TimeSpan.FromMilliseconds(300));
+        foreach (var repeatedHeld in tracker.ProcessFrame(frame, "pad-1"))
+        {
+            Assert.False((await engine.HandleAsync(repeatedHeld)).ActionExecuted);
+        }
+
+        Assert.Single(_executor.Executed);
+        Assert.Equal(["Ctrl", "P"], Assert.IsType<KeyboardShortcutAction>(_executor.Executed[0]).Keys);
+    }
+
+    [Fact]
+    public async Task HandleAsync_VibeCodingRbHeld_HoldsShortcutUntilRbRelease()
+    {
+        var engine = CreateEngine(TestProfiles.Binding(
+            GamepadControls.RightBumper,
+            gesture: InputGesture.Held,
+            action: new KeyboardShortcutAction(
+                ["Ctrl", "Shift", "Space"],
+                KeyDownOnly: true)));
+
+        var held = await engine.HandleAsync(
+            Event(GamepadControls.RightBumper, InputGesture.Held));
+        var repeatedHeld = await engine.HandleAsync(
+            Event(GamepadControls.RightBumper, InputGesture.Held));
+        var released = await engine.HandleAsync(
+            Event(GamepadControls.RightBumper, InputGesture.Released));
+
+        Assert.True(held.ActionExecuted);
+        Assert.False(repeatedHeld.ActionExecuted);
+        Assert.True(released.ActionExecuted);
+        Assert.Equal(2, _executor.Executed.Count);
+
+        var keyDown = Assert.IsType<KeyboardShortcutAction>(_executor.Executed[0]);
+        Assert.True(keyDown.KeyDownOnly);
+        Assert.Equal(["Ctrl", "Shift", "Space"], keyDown.Keys);
+
+        var keyUp = Assert.IsType<KeyboardShortcutAction>(_executor.Executed[1]);
+        Assert.True(keyUp.KeyUpOnly);
+        Assert.Equal(["Ctrl", "Shift", "Space"], keyUp.Keys);
+    }
+
+    [Fact]
+    public async Task VibeCoding_SyntheticFrames_ExecuteAAndBPressAndRbLongHold()
+    {
+        var profile = TestProfiles.AppProfile(
+            "vibe coding",
+            new AppMatchRule(ProcessName: AnyApp.ProcessName),
+            bindings:
+            [
+                TestProfiles.Binding(
+                    GamepadControls.A,
+                    action: new KeyboardShortcutAction(["Enter"])),
+                TestProfiles.Binding(
+                    GamepadControls.B,
+                    action: new KeyboardShortcutAction(["Delete"])),
+                TestProfiles.Binding(
+                    GamepadControls.RightBumper,
+                    gesture: InputGesture.Held,
+                    action: new KeyboardShortcutAction(
+                        ["Ctrl", "Shift", "Space"],
+                        KeyDownOnly: true))
+            ]);
+        var engine = new RoutingEngine(
+            new ProfileRouter(
+                new StubForegroundAppProvider(AnyApp),
+                new StubProfileRepository([profile])),
+            _executor,
+            timeProvider: _time);
+        var tracker = new GamepadInputTracker(
+            new GamepadInputTrackerOptions
+            {
+                DebounceMilliseconds = 15,
+                HoldThresholdMilliseconds = 400,
+                HoldRepeatIntervalMilliseconds = 100
+            },
+            _time);
+
+        async Task RouteFrameAsync(params string[] controls)
+        {
+            var frame = new GamepadFrame(new HashSet<string>(controls, StringComparer.Ordinal));
+            foreach (var input in tracker.ProcessFrame(frame, "xinput-0"))
+            {
+                await engine.HandleAsync(input);
+            }
+        }
+
+        await RouteFrameAsync(GamepadControls.A);
+        _time.Advance(TimeSpan.FromMilliseconds(15));
+        await RouteFrameAsync(GamepadControls.A);
+        await RouteFrameAsync();
+
+        await RouteFrameAsync(GamepadControls.B);
+        _time.Advance(TimeSpan.FromMilliseconds(15));
+        await RouteFrameAsync(GamepadControls.B);
+        await RouteFrameAsync();
+
+        await RouteFrameAsync(GamepadControls.RightBumper);
+        _time.Advance(TimeSpan.FromMilliseconds(15));
+        await RouteFrameAsync(GamepadControls.RightBumper);
+        _time.Advance(TimeSpan.FromMilliseconds(400));
+        await RouteFrameAsync(GamepadControls.RightBumper);
+        await RouteFrameAsync();
+
+        Assert.Equal(4, _executor.Executed.Count);
+        Assert.Equal(
+            ["Enter"],
+            Assert.IsType<KeyboardShortcutAction>(_executor.Executed[0]).Keys);
+        Assert.Equal(
+            ["Delete"],
+            Assert.IsType<KeyboardShortcutAction>(_executor.Executed[1]).Keys);
+
+        var rbDown = Assert.IsType<KeyboardShortcutAction>(_executor.Executed[2]);
+        Assert.Equal(["Ctrl", "Shift", "Space"], rbDown.Keys);
+        Assert.True(rbDown.KeyDownOnly);
+
+        var rbUp = Assert.IsType<KeyboardShortcutAction>(_executor.Executed[3]);
+        Assert.Equal(["Ctrl", "Shift", "Space"], rbUp.Keys);
+        Assert.True(rbUp.KeyUpOnly);
+    }
+
+    [Fact]
+    public async Task VibeCoding_BLongHold_RepeatsBackspaceBeyondTwoExecutions()
+    {
+        var engine = CreateEngine(
+            TestProfiles.Binding(
+                GamepadControls.B,
+                action: new KeyboardShortcutAction(["Backspace"])),
+            TestProfiles.Binding(
+                GamepadControls.B,
+                gesture: InputGesture.Held,
+                holdMilliseconds: 50,
+                action: new KeyboardShortcutAction(["Backspace"])));
+        var tracker = new GamepadInputTracker(
+            new GamepadInputTrackerOptions
+            {
+                DebounceMilliseconds = 15,
+                HoldThresholdMilliseconds = 400,
+                HoldRepeatIntervalMilliseconds = 50
+            },
+            _time);
+        var heldFrame = new GamepadFrame(
+            new HashSet<string> { GamepadControls.B });
+
+        _ = tracker.ProcessFrame(heldFrame, "pad-1");
+        _time.Advance(TimeSpan.FromMilliseconds(15));
+        foreach (var input in tracker.ProcessFrame(heldFrame, "pad-1"))
+        {
+            _ = await engine.HandleAsync(input);
+        }
+
+        _time.Advance(TimeSpan.FromMilliseconds(400));
+        foreach (var input in tracker.ProcessFrame(heldFrame, "pad-1"))
+        {
+            _ = await engine.HandleAsync(input);
+        }
+
+        for (var index = 0; index < 5; index++)
+        {
+            _time.Advance(TimeSpan.FromMilliseconds(50));
+            foreach (var input in tracker.ProcessFrame(heldFrame, "pad-1"))
+            {
+                _ = await engine.HandleAsync(input);
+            }
+        }
+
+        Assert.Equal(7, _executor.Executed.Count);
+        Assert.All(
+            _executor.Executed,
+            action => Assert.Equal(
+                ["Backspace"],
+                Assert.IsType<KeyboardShortcutAction>(action).Keys));
     }
 
     [Fact]
@@ -105,6 +345,26 @@ public sealed class RoutingEngineTests
         Assert.True(second.ActionExecuted);
 
         Assert.Equal(2, _executor.Executed.Count);
+    }
+
+    [Fact]
+    public async Task HandleAsync_HeldRepeatState_ClearsAfterRelease()
+    {
+        var engine = CreateEngine(TestProfiles.Binding(
+            GamepadControls.RightBumper,
+            gesture: InputGesture.Held,
+            holdMilliseconds: 100,
+            action: new KeyboardShortcutAction(["P"])));
+
+        Assert.True((await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Held))).ActionExecuted);
+        _time.Advance(TimeSpan.FromMilliseconds(100));
+        Assert.True((await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Held))).ActionExecuted);
+        _ = await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Released));
+        Assert.True((await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Held))).ActionExecuted);
+        _ = await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Pressed));
+        Assert.True((await engine.HandleAsync(Event(GamepadControls.RightBumper, InputGesture.Held))).ActionExecuted);
+
+        Assert.Equal(4, _executor.Executed.Count);
     }
 
     [Fact]
@@ -148,7 +408,7 @@ public sealed class RoutingEngineTests
         var router = new ProfileRouter(
             new StubForegroundAppProvider(AnyApp),
             new StubProfileRepository([]));
-        var engine = new RoutingEngine(router, _executor, _haptic, options, _time, _speechTool);
+        var engine = new RoutingEngine(router, _executor, _haptic, options, _time);
 
         var outcome = await engine.HandleAsync(Event("A", InputGesture.Pressed));
 
@@ -214,7 +474,7 @@ public sealed class RoutingEngineTests
     }
 
     [Fact]
-    public async Task HandleAsync_BindingFeedback_OverridesDefault()
+    public async Task HandleAsync_BindingFeedback_PlaysConfiguredPattern()
     {
         var feedback = new HapticPattern(0.9, 0.1, TimeSpan.FromMilliseconds(50));
         var engine = CreateEngine(TestProfiles.Binding("A", feedback: feedback));
@@ -227,7 +487,7 @@ public sealed class RoutingEngineTests
     [Fact]
     public async Task HandleAsync_ZeroDurationFeedback_NoHaptic()
     {
-        // 时长为零的反馈（无论是 Binding 覆盖还是选项）不触发震动调用。
+        // 时长为零的 Binding 反馈不触发震动调用。
         var engine = CreateEngine(TestProfiles.Binding(
             "A",
             feedback: new HapticPattern(0.5, 0.5, TimeSpan.Zero)));
@@ -235,94 +495,6 @@ public sealed class RoutingEngineTests
         _ = await engine.HandleAsync(Event("A", InputGesture.Pressed));
 
         Assert.Empty(_haptic.Played);
-    }
-
-    [Fact]
-    public async Task Speech_HotkeyMode_PressStartsReleaseStops()
-    {
-        var engine = CreateEngine(TestProfiles.Binding(
-            "A",
-            action: new SpeechToolAction(
-                new KeyboardShortcutAction(["Ctrl", "Space"], KeyDownOnly: true),
-                new KeyboardShortcutAction(["Space"]))));
-
-        var press = await engine.HandleAsync(Event("A", InputGesture.Pressed));
-        Assert.True(press.ActionExecuted);
-        Assert.Single(_executor.Executed);
-
-        var release = await engine.HandleAsync(Event("A", InputGesture.Released));
-        Assert.True(release.ActionExecuted);
-
-        // 释放序列：Ctrl+Space 抬起（配对），Space 点按（停止）。
-        Assert.Equal(3, _executor.Executed.Count);
-        var keyUp = Assert.IsType<KeyboardShortcutAction>(_executor.Executed[1]);
-        Assert.True(keyUp.KeyUpOnly);
-        Assert.Equal(["Ctrl", "Space"], keyUp.Keys);
-        Assert.Equal(["Space"], Assert.IsType<KeyboardShortcutAction>(_executor.Executed[2]).Keys);
-    }
-
-    [Fact]
-    public async Task Speech_ProcessMode_PressStartsSessionReleaseStopsIt()
-    {
-        var engine = CreateEngine(TestProfiles.Binding(
-            "A",
-            action: new SpeechToolAction(
-                new KeyboardShortcutAction([]),
-                new KeyboardShortcutAction([]),
-                ExecutablePath: @"C:\tools\stt.exe",
-                Arguments: "--ptt")));
-
-        var press = await engine.HandleAsync(Event("A", InputGesture.Pressed));
-
-        Assert.True(press.ActionExecuted);
-        var session = Assert.Single(_speechTool.Started);
-        Assert.Equal(@"C:\tools\stt.exe", session.ExecutablePath);
-
-        // 长按不重复启动会话。
-        Assert.Equal(RoutingStatus.NoBinding, (await engine.HandleAsync(Event("A", InputGesture.Held))).Status);
-
-        var release = await engine.HandleAsync(Event("A", InputGesture.Released));
-        Assert.True(release.ActionExecuted);
-        Assert.Equal(session.Id, Assert.Single(_speechTool.Stopped).Id);
-        Assert.Empty(_executor.Executed);
-    }
-
-    [Fact]
-    public async Task Speech_ProcessMode_StartFailure_FailureFeedback()
-    {
-        _speechTool.ThrowOnStart = new FileNotFoundException("工具不存在", @"C:\tools\stt.exe");
-        var engine = CreateEngine(TestProfiles.Binding(
-            "A",
-            action: new SpeechToolAction(
-                new KeyboardShortcutAction([]),
-                new KeyboardShortcutAction([]),
-                ExecutablePath: @"C:\tools\stt.exe")));
-
-        var outcome = await engine.HandleAsync(Event("A", InputGesture.Pressed));
-
-        Assert.False(outcome.ActionExecuted);
-        Assert.Contains("工具不存在", outcome.Error, StringComparison.Ordinal);
-        Assert.Equal(RoutingEngineOptions.Default.FailureFeedback, Assert.Single(_haptic.Played).Pattern);
-    }
-
-    [Fact]
-    public async Task Speech_ProcessMode_WithoutController_ReturnsError()
-    {
-        var profiles = new[] { TestProfiles.DefaultProfile(TestProfiles.Binding(
-            "A",
-            action: new SpeechToolAction(
-                new KeyboardShortcutAction([]),
-                new KeyboardShortcutAction([]),
-                ExecutablePath: @"C:\tools\stt.exe"))) };
-        var router = new ProfileRouter(
-            new StubForegroundAppProvider(AnyApp),
-            new StubProfileRepository(profiles));
-        var engine = new RoutingEngine(router, _executor, _haptic, null, _time, speechToolController: null);
-
-        var outcome = await engine.HandleAsync(Event("A", InputGesture.Pressed));
-
-        Assert.False(outcome.ActionExecuted);
-        Assert.Contains("ISpeechToolProcessController", outcome.Error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -346,29 +518,13 @@ public sealed class RoutingEngineTests
     }
 
     [Fact]
-    public async Task ReleaseAllAsync_StopsActiveSpeechSessions()
-    {
-        var engine = CreateEngine(TestProfiles.Binding(
-            "A",
-            action: new SpeechToolAction(
-                new KeyboardShortcutAction([]),
-                new KeyboardShortcutAction([]),
-                ExecutablePath: @"C:\tools\stt.exe")));
-        _ = await engine.HandleAsync(Event("A", InputGesture.Pressed));
-        Assert.Single(_speechTool.Started);
-
-        await engine.ReleaseAllAsync();
-
-        Assert.Equal(_speechTool.Started[0].Id, Assert.Single(_speechTool.Stopped).Id);
-    }
-
-    [Fact]
     public async Task HandleAsync_HeldRepeat_RespectsMinimumIntervalFloor()
     {
         var options = new RoutingEngineOptions { MinimumHoldRepeatMilliseconds = 25 };
         var engine = CreateEngine(options, TestProfiles.Binding(
             "A",
             gesture: InputGesture.Held,
+            holdMilliseconds: 1,
             action: new KeyboardShortcutAction(["Space"])));
 
         _ = await engine.HandleAsync(Event("A", InputGesture.Held));       // 执行
@@ -459,35 +615,6 @@ public sealed class RoutingEngineTests
         await engine.HandleAsync(Event("A", InputGesture.Pressed));
         Assert.False((await engine.HandleAsync(Event("A", InputGesture.Released))).ActionExecuted);
         Assert.Single(_executor.Executed);
-    }
-
-    [Fact]
-    public async Task Speech_AfterForegroundChange_StopsOriginalSession()
-    {
-        ForegroundApp? current = AnyApp;
-        var binding = TestProfiles.Binding("A", action: new SpeechToolAction(
-            new KeyboardShortcutAction([]), new KeyboardShortcutAction([]), "stt.exe"));
-        var profile = TestProfiles.AppProfile("App", new AppMatchRule(ProcessName: AnyApp.ProcessName), bindings: [binding]);
-        var engine = new RoutingEngine(new ProfileRouter(
-            new ScriptedForegroundAppProvider(() => current), new StubProfileRepository([profile])),
-            _executor, speechToolController: _speechTool);
-        await engine.HandleAsync(Event("A", InputGesture.Pressed));
-        current = null;
-        await engine.HandleAsync(Event("A", InputGesture.Released));
-        Assert.Equal(Assert.Single(_speechTool.Started), Assert.Single(_speechTool.Stopped));
-    }
-
-    [Fact]
-    public async Task Speech_TwoDevices_ReleaseOnlyTheirOwnSessions()
-    {
-        var engine = CreateEngine(TestProfiles.Binding("A", action: new SpeechToolAction(
-            new KeyboardShortcutAction([]), new KeyboardShortcutAction([]), "stt.exe")));
-        await engine.HandleAsync(Event("A", InputGesture.Pressed));
-        await engine.HandleAsync(Event("A", InputGesture.Pressed) with { DeviceId = "pad-2" });
-        await engine.HandleAsync(Event("A", InputGesture.Released));
-        Assert.Equal(_speechTool.Started[0], Assert.Single(_speechTool.Stopped));
-        await engine.HandleAsync(Event("A", InputGesture.Released) with { DeviceId = "pad-2" });
-        Assert.Equal(_speechTool.Started, _speechTool.Stopped);
     }
 
 }

@@ -26,6 +26,36 @@ public sealed class AppRuleMatcherTests
     }
 
     [Fact]
+    public void Matches_WindowsPackagePath_IgnoresInstallRootAndPackageVersion()
+    {
+        var rule = new AppMatchRule(
+            ProcessName: "ChatGPT",
+            ExecutablePath: @"G:\WindowsApps\OpenAI.Codex_26.901.5003.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe");
+        var currentChatGpt = new ForegroundApp(
+            36064,
+            "ChatGPT",
+            @"C:\Program Files\WindowsApps\OpenAI.Codex_26.901.6511.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe",
+            "ChatGPT");
+
+        Assert.True(AppRuleMatcher.Matches(rule, currentChatGpt));
+    }
+
+    [Fact]
+    public void Matches_WindowsPackagePath_RejectsDifferentPackage()
+    {
+        var rule = new AppMatchRule(
+            ProcessName: "ChatGPT",
+            ExecutablePath: @"G:\WindowsApps\OpenAI.Codex_26.901.5003.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe");
+        var otherPackage = new ForegroundApp(
+            1,
+            "ChatGPT",
+            @"C:\Program Files\WindowsApps\Other.Codex_26.901.6511.0_x64__otherpublisher\app\ChatGPT.exe",
+            "ChatGPT");
+
+        Assert.False(AppRuleMatcher.Matches(rule, otherPackage));
+    }
+
+    [Fact]
     public void Matches_WindowTitle_RegexIgnoreCase()
     {
         var rule = new AppMatchRule(WindowTitlePattern: @"program\.cs.*visual studio");

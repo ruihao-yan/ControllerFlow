@@ -8,11 +8,11 @@ public sealed class GamepadInputTrackerOptions
     /// <summary>按键去抖时间。状态必须稳定保持该时长后才确认按下，抑制机械抖动。</summary>
     public int DebounceMilliseconds { get; init; } = 15;
 
-    /// <summary>长按判定阈值：按下保持超过该时长后开始产生 Held 事件。</summary>
+    /// <summary>长按判定阈值：按下保持达到该时长后开始产生 Held 事件。</summary>
     public int HoldThresholdMilliseconds { get; init; } = 400;
 
     /// <summary>长按期间 Held 事件的重复间隔。</summary>
-    public int HoldRepeatIntervalMilliseconds { get; init; } = 100;
+    public int HoldRepeatIntervalMilliseconds { get; init; } = 50;
 
     /// <summary>摇杆死区。轴绝对值超过该值时生成对应方向控件。</summary>
     public double StickDeadzone { get; init; } = 0.12;
@@ -123,26 +123,26 @@ public sealed class GamepadInputTracker
                     break;
 
                 case ControlState.Active:
-                    if (ElapsedMilliseconds(info.StateChangedAt, now) < _options.HoldThresholdMilliseconds)
+                    var holdTicks = ToTimestampTicks(_options.HoldThresholdMilliseconds);
+                    var firstHeldAt = info.StateChangedAt + holdTicks;
+                    if (now < firstHeldAt)
                     {
                         break;
                     }
 
-                    // 长按重复：按到期时间推进，帧间隔不稳定时补齐缺失的重复次数
-                    // （有上限，防异常配置下失控）。
-                    var repeatTicks = (long)(
-                        _options.HoldRepeatIntervalMilliseconds / 1000.0 * _timeProvider.TimestampFrequency);
+                    // 长按重复从长按阈值开始计时。此前按下到阈值之间的时间
+                    // 不应在达到阈值时补发多次 Held，否则一次长按会瞬间执行多次快捷键。
+                    var repeatTicks = ToTimestampTicks(_options.HoldRepeatIntervalMilliseconds);
+                    if (info.LastHeldAt < firstHeldAt)
+                    {
+                        info.LastHeldAt = firstHeldAt;
+                    }
+
                     var catchUpLimit = 64;
-                    while (catchUpLimit-- > 0 && now - info.LastHeldAt >= repeatTicks)
+                    while (catchUpLimit-- > 0 && info.LastHeldAt <= now)
                     {
                         events.Add(CreateEvent(deviceId, controlId, InputGesture.Held));
                         info.LastHeldAt += repeatTicks;
-                    }
-
-                    // 补齐后可能越过 now（下一到期时间在未来）：回拨到当前帧，避免时间回拨残留。
-                    if (info.LastHeldAt > now)
-                    {
-                        info.LastHeldAt = now;
                     }
 
                     break;
@@ -236,6 +236,18 @@ public sealed class GamepadInputTracker
 
     private ControllerInputEvent CreateEvent(string deviceId, string controlId, InputGesture gesture) =>
         new(deviceId, controlId, gesture, _timeProvider.GetUtcNow());
+
+    private long ToTimestampTicks(int milliseconds)
+    {
+        if (milliseconds <= 0)
+        {
+            return 0;
+        }
+
+        return Math.Max(
+            1L,
+            (long)(milliseconds / 1000.0 * _timeProvider.TimestampFrequency));
+    }
 
     private int ElapsedMilliseconds(long start, long now) =>
         (int)_timeProvider.GetElapsedTime(start, now).TotalMilliseconds;

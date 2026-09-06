@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
+    <AssemblyName>ControllerFlow</AssemblyName>
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
     <!-- 允许在非 Windows（Linux CI）主机上交叉编译本项目，便于持续构建验证。 -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>

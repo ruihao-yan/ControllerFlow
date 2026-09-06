@@ -9,8 +9,7 @@ namespace ControllerFlow.Windows.Output;
 /// <summary>
 /// 基于 SendInput / Process.Start 的输出执行器：
 /// 键盘组合键（含媒体键，KeyDownOnly / KeyUpOnly 语义由引擎配对）、
-/// 鼠标相对移动与滚轮、启动程序。语音动作由引擎拆解为
-/// Start / Stop 快捷键后逐次调用本执行器。
+/// 鼠标相对移动与滚轮、启动程序。
 /// </summary>
 public sealed class Win32ActionExecutor : IActionExecutor
 {
@@ -31,17 +30,12 @@ public sealed class Win32ActionExecutor : IActionExecutor
                 break;
 
             case MediaKeyAction media:
-                SendKeyDown((ushort)media.Key);
-                SendKeyUp((ushort)media.Key);
+                SendKeyboardInput((ushort)media.Key, keyUp: false);
+                SendKeyboardInput((ushort)media.Key, keyUp: true);
                 break;
 
             case LaunchApplicationAction launch:
                 await ExecuteLaunchAsync(launch, cancellationToken);
-                break;
-
-            case SpeechToolAction speech:
-                // 语音会话由引擎按按下/释放拆解；此处兜底仅做一次“开始”点按。
-                ExecuteKeyboard(speech.Start with { KeyDownOnly = false, KeyUpOnly = false });
                 break;
 
             default:
@@ -61,7 +55,7 @@ public sealed class Win32ActionExecutor : IActionExecutor
         {
             foreach (var key in keys)
             {
-                SendKeyDown((ushort)key);
+                SendKeyboardInput((ushort)key, keyUp: false);
             }
         }
 
@@ -69,7 +63,7 @@ public sealed class Win32ActionExecutor : IActionExecutor
         {
             for (var i = keys.Length - 1; i >= 0; i--)
             {
-                SendKeyUp((ushort)keys[i]);
+                SendKeyboardInput((ushort)keys[i], keyUp: true);
             }
         }
     }
@@ -148,14 +142,14 @@ public sealed class Win32ActionExecutor : IActionExecutor
             ? code
             : throw new InvalidOperationException($"无法识别的按键名：{name}");
 
-    private static void SendKeyDown(ushort virtualKey) =>
-        SendKeyboardInput(virtualKey, 0);
-
-    private static void SendKeyUp(ushort virtualKey) =>
-        SendKeyboardInput(virtualKey, KeyEventFlags.KeyUp);
-
-    private static void SendKeyboardInput(ushort virtualKey, KeyEventFlags flags)
+    private static void SendKeyboardInput(ushort virtualKey, bool keyUp)
     {
+        var flags = keyUp ? KeyEventFlags.KeyUp : 0;
+        if (IsExtendedKey(virtualKey))
+        {
+            flags |= KeyEventFlags.ExtendedKey;
+        }
+
         var input = new Input
         {
             Type = (uint)InputType.Keyboard,
@@ -168,8 +162,34 @@ public sealed class Win32ActionExecutor : IActionExecutor
                 }
             }
         };
-        _ = NativeMethods.SendInput(1, [input], Marshal.SizeOf<Input>());
+        var sent = NativeMethods.SendInput(1, [input], Marshal.SizeOf<Input>());
+        if (sent != 1)
+        {
+            throw new InvalidOperationException(
+                $"键盘输入注入失败，SendInput 返回 {sent}，错误码 {Marshal.GetLastWin32Error()}。");
+        }
     }
+
+    private static bool IsExtendedKey(ushort virtualKey) => virtualKey switch
+    {
+        (ushort)KeyCode.Insert or
+        (ushort)KeyCode.Delete or
+        (ushort)KeyCode.Home or
+        (ushort)KeyCode.End or
+        (ushort)KeyCode.PageUp or
+        (ushort)KeyCode.PageDown or
+        (ushort)KeyCode.Left or
+        (ushort)KeyCode.Up or
+        (ushort)KeyCode.Right or
+        (ushort)KeyCode.Down or
+        (ushort)KeyCode.PrintScreen or
+        (ushort)KeyCode.Divide or
+        (ushort)KeyCode.RightControl or
+        (ushort)KeyCode.RightAlt or
+        (ushort)KeyCode.LeftWindows or
+        (ushort)KeyCode.RightWindows => true,
+        _ => false
+    };
 
     private static void SendMouseInput(MouseInput mouse)
     {
@@ -178,7 +198,12 @@ public sealed class Win32ActionExecutor : IActionExecutor
             Type = (uint)InputType.Mouse,
             Data = new InputUnion { Mouse = mouse }
         };
-        _ = NativeMethods.SendInput(1, [input], Marshal.SizeOf<Input>());
+        var sent = NativeMethods.SendInput(1, [input], Marshal.SizeOf<Input>());
+        if (sent != 1)
+        {
+            throw new InvalidOperationException(
+                $"鼠标输入注入失败，SendInput 返回 {sent}，错误码 {Marshal.GetLastWin32Error()}。");
+        }
     }
 
     private enum InputType : uint
@@ -190,6 +215,7 @@ public sealed class Win32ActionExecutor : IActionExecutor
     [Flags]
     private enum KeyEventFlags : uint
     {
+        ExtendedKey = 0x0001,
         KeyUp = 0x0002
     }
 

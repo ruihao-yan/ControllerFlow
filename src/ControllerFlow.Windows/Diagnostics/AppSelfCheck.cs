@@ -1,4 +1,5 @@
 using ControllerFlow.Core.Ports;
+using ControllerFlow.Windows.Input;
 using Windows.Gaming.Input;
 
 namespace ControllerFlow.Windows.Diagnostics;
@@ -52,10 +53,10 @@ public static class AppSelfCheck
 
         try
         {
-            var count = Gamepad.Gamepads.Count;
+            var count = GamepadCompatibility.GetConnectedCount();
             return count > 0
                 ? new SelfCheckItem("已连接手柄", true, $"检测到 {count} 只手柄")
-                : new SelfCheckItem("已连接手柄", true, "未检测到手柄（连接手柄后自动上线）");
+                : new SelfCheckItem("已连接手柄", false, "未检测到手柄，请连接手柄后重试。");
         }
         catch (Exception ex)
         {

@@ -1,4 +1,6 @@
+using ControllerFlow.Core.Models;
 using ControllerFlow.Windows.Diagnostics;
+using ControllerFlow.Windows.Input;
 using ControllerFlow.Windows.Logging;
 using Xunit;
 
@@ -6,7 +8,7 @@ namespace ControllerFlow.Windows.Tests;
 
 /// <summary>
 /// Windows 层的集成测试。依赖 Windows 运行时（user32.dll / Windows.Gaming.Input）
-/// 的用例在非 Windows 主机上自动跳过；纯 .NET 文件逻辑（FileLog）全平台可跑。
+/// 的常规用例在非 Windows 主机上自动跳过；交互手柄诊断要求真实设备并明确报告失败。
 /// </summary>
 public sealed class WindowsInfrastructureTests
 {
@@ -79,23 +81,43 @@ public sealed class WindowsInfrastructureTests
     }
 
     [Fact]
-    public async Task SpeechToolProcessController_StartsAndStopsProcessOnWindows()
+    public void XInputGamepadMapper_MapsRightShoulderToRb()
     {
-        if (!OperatingSystem.IsWindows())
+        var frame = XInputGamepadMapper.BuildFrame(new XInputGamepad
         {
-            return; // 非 Windows CI：跳过。
-        }
+            Buttons = 0x0200
+        });
 
-        var controller = new ControllerFlow.Windows.Speech.SpeechToolProcessController();
+        Assert.Contains(GamepadControls.RightBumper, frame.PressedButtons);
+    }
 
-        var session = await controller.StartAsync("notepad.exe", null, CancellationToken.None);
+    [Fact]
+    public void XInputGamepadMapper_MapsFaceButtonsToAAndB()
+    {
+        var frame = XInputGamepadMapper.BuildFrame(new XInputGamepad
+        {
+            Buttons = 0x1000 | 0x2000
+        });
 
-        Assert.NotNull(session);
+        Assert.Contains(GamepadControls.A, frame.PressedButtons);
+        Assert.Contains(GamepadControls.B, frame.PressedButtons);
+    }
 
-        await controller.StopAsync(session!, CancellationToken.None);
+    [Fact]
+    public void XInputGamepadMapper_NormalizesAxesAndTriggers()
+    {
+        var frame = XInputGamepadMapper.BuildFrame(new XInputGamepad
+        {
+            LeftTrigger = byte.MaxValue,
+            RightTrigger = 128,
+            LeftThumbX = short.MinValue,
+            LeftThumbY = short.MaxValue
+        });
 
-        // notepad 已结束：再次 Stop 应为无操作（不应抛异常）。
-        await controller.StopAsync(session!, CancellationToken.None);
+        Assert.Equal(1, frame.LeftTrigger);
+        Assert.Equal(128 / 255.0, frame.RightTrigger);
+        Assert.Equal(-1, frame.LeftThumbX);
+        Assert.Equal(1, frame.LeftThumbY);
     }
 
     [Fact]

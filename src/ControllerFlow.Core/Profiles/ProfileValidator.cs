@@ -117,15 +117,6 @@ public sealed class ProfileValidator
                     yield return Error("KeyDownOnly 与 KeyUpOnly 不能同时开启。", profile.Id, binding.Id);
                 }
 
-                if (binding.Trigger.Gesture == InputGesture.Held
-                    && (keyboard.KeyDownOnly || keyboard.KeyUpOnly))
-                {
-                    yield return Warning(
-                        "长按触发不重复执行 KeyDownOnly / KeyUpOnly 动作。",
-                        profile.Id,
-                        binding.Id);
-                }
-
                 yield break;
 
             case MouseAction { Operation: MouseOperation.None }:
@@ -140,48 +131,6 @@ public sealed class ProfileValidator
                 yield return Error("媒体键动作无效。", profile.Id, binding.Id);
                 yield break;
 
-            case SpeechToolAction speech:
-                if (string.IsNullOrWhiteSpace(speech.ExecutablePath))
-                {
-                    // 快捷键模式：开始 / 停止快捷键均必须配置按键。
-                    foreach (var (shortcut, label) in new[]
-                    {
-                        (speech.Start, "开始"),
-                        (speech.Stop, "停止")
-                    })
-                    {
-                        if (shortcut.Keys.Count == 0)
-                        {
-                            yield return Error($"语音动作的「{label}」快捷键没有配置按键。", profile.Id, binding.Id);
-                            continue;
-                        }
-
-                        foreach (var key in shortcut.Keys.Where(key => !KeyNameMap.TryGet(key, out _)))
-                        {
-                            yield return Error(
-                                $"语音动作的「{label}」快捷键包含无法识别的按键名「{key}」。",
-                                profile.Id,
-                                binding.Id);
-                        }
-
-                        if (shortcut.KeyDownOnly && shortcut.KeyUpOnly)
-                        {
-                            yield return Error(
-                                $"语音动作的「{label}」快捷键 KeyDownOnly 与 KeyUpOnly 不能同时开启。",
-                                profile.Id,
-                                binding.Id);
-                        }
-                    }
-                }
-                else if (speech.Start.Keys.Count > 0 || speech.Stop.Keys.Count > 0)
-                {
-                    yield return Warning(
-                        "语音动作同时配置了工具路径与快捷键，将使用工具路径（进程模式），快捷键被忽略。",
-                        profile.Id,
-                        binding.Id);
-                }
-
-                yield break;
         }
     }
 

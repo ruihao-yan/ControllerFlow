@@ -6,8 +6,8 @@ using Windows.Gaming.Input;
 namespace ControllerFlow.Windows.Haptics;
 
 /// <summary>
-/// 基于 Windows.Gaming.Input 振动电机的手柄震动反馈。
-/// 通过 <see cref="GamepadRegistry"/> 定位发出事件的手柄；
+/// 基于 Windows.Gaming.Input 与 XInput 的手柄震动反馈。
+/// 通过 <see cref="GamepadRegistry"/> 或 XInput 设备 ID 定位发出事件的手柄；
 /// 手柄已断开时回退到任一已连接手柄。
 /// </summary>
 public sealed class GamepadHapticFeedback : IHapticFeedback
@@ -32,6 +32,7 @@ public sealed class GamepadHapticFeedback : IHapticFeedback
         var gamepad = GamepadRegistry.Find(deviceId) ?? GamepadRegistry.FindAny();
         if (gamepad is null)
         {
+            await PlayXInputAsync(deviceId, pattern, cancellationToken);
             return;
         }
 
@@ -59,6 +60,27 @@ public sealed class GamepadHapticFeedback : IHapticFeedback
             // 手柄中途断开时停止震动失败可忽略。
         }
     }
+
+    private static async ValueTask PlayXInputAsync(
+        string deviceId,
+        HapticPattern pattern,
+        CancellationToken cancellationToken)
+    {
+        if (!XInputNative.TryGetDeviceIndex(deviceId, out var index)
+            || !XInputNative.TrySetVibration(
+                index,
+                ToMotorSpeed(pattern.LeftMotor),
+                ToMotorSpeed(pattern.RightMotor)))
+        {
+            return;
+        }
+
+        await Task.Delay(pattern.Duration, cancellationToken);
+        _ = XInputNative.TrySetVibration(index, 0, 0);
+    }
+
+    private static ushort ToMotorSpeed(double value) =>
+        (ushort)Math.Round(Clamp(value) * ushort.MaxValue);
 
     private static double Clamp(double value) => Math.Clamp(value, 0.0, 1.0);
 }

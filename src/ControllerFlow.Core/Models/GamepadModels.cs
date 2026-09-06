@@ -1,8 +1,8 @@
 namespace ControllerFlow.Core.Models;
 
 /// <summary>
-/// 一次手柄采样帧。由 Windows 适配层从 Windows.Gaming.Input 读取原始状态后
-/// 转换成与平台无关的帧，交给 <see cref="Input.GamepadInputTracker"/> 归一化。
+/// 一次手柄采样帧。由 Windows 适配层读取原始状态后转换成与平台无关的帧，
+/// 交给 <see cref="Input.GamepadInputTracker"/> 归一化。
 /// </summary>
 /// <param name="PressedButtons">当前按下的数字按键（使用 <see cref="GamepadControls"/> 常量）。</param>
 /// <param name="LeftThumbX">左摇杆 X 轴，范围 [-1, 1]，正值向右。</param>

@@ -6,7 +6,7 @@ using Windows.Gaming.Input;
 namespace ControllerFlow.Windows.Input;
 
 /// <summary>
-/// 基于 Windows.Gaming.Input 的手柄输入源：
+/// Windows 手柄输入源：优先使用 XInput，未枚举到设备时回退到 Windows.Gaming.Input。
 /// 轮询全部已连接手柄（天然支持热插拔），把原始采样转换为
 /// <see cref="GamepadFrame"/> 交给 Core 的 <see cref="GamepadInputTracker"/>
 /// 归一化成按下 / 释放 / 长按事件。不同型号手柄统一按
@@ -19,6 +19,10 @@ public sealed class WindowsGamepadSource : IControllerInputSource
     private readonly GamepadInputTracker _tracker;
     private readonly object _sync = new();
     private readonly Dictionary<string, Gamepad> _active = new(StringComparer.Ordinal);
+    private const int XInputMissingPollLimit = 100;
+
+    private readonly HashSet<uint> _activeXInput = [];
+    private int _xInputMissedPolls;
     private CancellationTokenSource? _cts;
     private Task? _pollTask;
     private int _nextDeviceId;
@@ -29,6 +33,17 @@ public sealed class WindowsGamepadSource : IControllerInputSource
     }
 
     public event EventHandler<ControllerInputEvent>? InputReceived;
+
+    public int ConnectedGamepadCount
+    {
+        get
+        {
+            lock (_sync)
+            {
+                return _active.Count + _activeXInput.Count;
+            }
+        }
+    }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -74,6 +89,7 @@ public sealed class WindowsGamepadSource : IControllerInputSource
         }
 
         cts?.Dispose();
+        ClearTrackedDevices();
     }
 
     private async Task PollAsync(CancellationToken token)
@@ -94,8 +110,24 @@ public sealed class WindowsGamepadSource : IControllerInputSource
 
     private void PollOnce()
     {
+        if (PollXInputOnce())
+        {
+            RemoveMissingGamepads(new HashSet<Gamepad>());
+            return;
+        }
+
+        Gamepad[] gamepads;
+        try
+        {
+            gamepads = Gamepad.Gamepads.ToArray();
+        }
+        catch
+        {
+            gamepads = [];
+        }
+
         var seen = new HashSet<Gamepad>();
-        foreach (var gamepad in Gamepad.Gamepads)
+        foreach (var gamepad in gamepads)
         {
             seen.Add(gamepad);
             var deviceId = GetOrRegisterDeviceId(gamepad);
@@ -111,16 +143,61 @@ public sealed class WindowsGamepadSource : IControllerInputSource
                 continue;
             }
 
-            var buttons = new HashSet<string>(StringComparer.Ordinal);
-            var frame = BuildFrame(reading, buttons);
-            var events = _tracker.ProcessFrame(frame, deviceId);
-            foreach (var inputEvent in events)
+            Dispatch(_tracker.ProcessFrame(BuildFrame(reading), deviceId));
+        }
+
+        RemoveMissingGamepads(seen);
+    }
+
+    private bool PollXInputOnce()
+    {
+        var seen = new HashSet<uint>();
+        for (uint index = 0; index < 4; index++)
+        {
+            if (!XInputNative.TryGetState(index, out var state))
             {
-                InputReceived?.Invoke(this, inputEvent);
+                continue;
+            }
+
+            seen.Add(index);
+            lock (_sync)
+            {
+                _activeXInput.Add(index);
+            }
+
+            Dispatch(_tracker.ProcessFrame(
+                XInputGamepadMapper.BuildFrame(state.Gamepad),
+                $"xinput-{index}"));
+        }
+
+        if (seen.Count > 0)
+        {
+            _xInputMissedPolls = 0;
+            RemoveMissingXInputGamepads(seen);
+            return true;
+        }
+
+        lock (_sync)
+        {
+            if (_activeXInput.Count > 0)
+            {
+                _xInputMissedPolls++;
+                if (_xInputMissedPolls < XInputMissingPollLimit)
+                {
+                    // 最多容忍约一秒的连续读取失败，保持当前按键会话，
+                    // 避免无线链路抖动把一次按住拆成多次 Pressed。
+                    return true;
+                }
             }
         }
 
-        // 热插拔：已移除的手柄生成剩余释放事件。
+        _xInputMissedPolls = 0;
+        RemoveMissingXInputGamepads(seen);
+        return false;
+    }
+
+    private void RemoveMissingGamepads(ISet<Gamepad> seen)
+    {
         List<ControllerInputEvent>? released = null;
         lock (_sync)
         {
@@ -138,12 +215,56 @@ public sealed class WindowsGamepadSource : IControllerInputSource
             }
         }
 
-        if (released is not null)
+        Dispatch(released);
+    }
+
+    private void RemoveMissingXInputGamepads(ISet<uint> seen)
+    {
+        List<ControllerInputEvent>? released = null;
+        lock (_sync)
         {
-            foreach (var inputEvent in released)
+            foreach (var index in _activeXInput.Where(index => !seen.Contains(index)).ToArray())
             {
-                InputReceived?.Invoke(this, inputEvent);
+                _activeXInput.Remove(index);
+                released ??= [];
+                released.AddRange(_tracker.Reset($"xinput-{index}"));
             }
+        }
+
+        Dispatch(released);
+    }
+
+    private void Dispatch(IEnumerable<ControllerInputEvent>? events)
+    {
+        if (events is null)
+        {
+            return;
+        }
+
+        foreach (var inputEvent in events)
+        {
+            InputReceived?.Invoke(this, inputEvent);
+        }
+    }
+
+    private void ClearTrackedDevices()
+    {
+        lock (_sync)
+        {
+            foreach (var deviceId in _active.Keys)
+            {
+                GamepadRegistry.Unregister(deviceId);
+                _ = _tracker.Reset(deviceId);
+            }
+
+            foreach (var index in _activeXInput)
+            {
+                _ = _tracker.Reset($"xinput-{index}");
+            }
+
+            _active.Clear();
+            _activeXInput.Clear();
+            _xInputMissedPolls = 0;
         }
     }
 
@@ -166,8 +287,9 @@ public sealed class WindowsGamepadSource : IControllerInputSource
         }
     }
 
-    private static GamepadFrame BuildFrame(GamepadReading reading, HashSet<string> buttons)
+    private static GamepadFrame BuildFrame(GamepadReading reading)
     {
+        var buttons = new HashSet<string>(StringComparer.Ordinal);
         var flags = reading.Buttons;
         if ((flags & GamepadButtons.A) != 0)
         {

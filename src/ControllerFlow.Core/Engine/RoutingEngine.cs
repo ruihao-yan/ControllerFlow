@@ -9,9 +9,6 @@ namespace ControllerFlow.Core.Engine;
 /// </summary>
 public sealed class RoutingEngineOptions
 {
-    /// <summary>成功匹配并执行后的默认震动反馈（Binding 未覆盖 Feedback 时使用）。</summary>
-    public HapticPattern SuccessFeedback { get; init; } = new(0.2, 0.2, TimeSpan.FromMilliseconds(80));
-
     /// <summary>无 Profile / 无匹配绑定时的默认震动反馈（默认静默）。</summary>
     public HapticPattern NoMatchFeedback { get; init; } = new(0.0, 0.0, TimeSpan.Zero);
 
@@ -19,8 +16,8 @@ public sealed class RoutingEngineOptions
     public HapticPattern FailureFeedback { get; init; } = new(0.8, 0.8, TimeSpan.FromMilliseconds(250));
 
     /// <summary>
-    /// 长按重复的最小间隔。绑定 Trigger 的 HoldMilliseconds 可作为
-    /// 该绑定长按重复间隔的覆盖值，但不会低于该最小值。
+    /// 长按重复的最小间隔。Trigger.HoldMilliseconds 为 0 时仅执行一次；
+    /// 大于 0 时作为重复间隔，且不会低于该最小值。
     /// </summary>
     public int MinimumHoldRepeatMilliseconds { get; init; } = 25;
 
@@ -29,8 +26,8 @@ public sealed class RoutingEngineOptions
 
 /// <summary>
 /// 主链路 Input -> Router -> Profile -> Output 的执行引擎：
-/// 负责按下/释放配对（组合键不卡键）、语音会话（按住说话）、
-/// 长按重复节流，以及成功 / 无匹配 / 失败三类震动反馈。
+/// 负责按下/释放配对（组合键不卡键）、长按重复节流，
+/// 以及 Binding / 无匹配 / 失败三类震动反馈。
 /// 引擎只依赖端口接口，不依赖 Windows API。
 /// </summary>
 public sealed class RoutingEngine
@@ -38,30 +35,26 @@ public sealed class RoutingEngine
     private readonly ProfileRouter _router;
     private readonly IActionExecutor _executor;
     private readonly IHapticFeedback? _haptic;
-    private readonly ISpeechToolProcessController? _speechToolController;
     private readonly RoutingEngineOptions _options;
     private readonly TimeProvider _timeProvider;
     private readonly object _sync = new();
     private readonly SemaphoreSlim _eventGate = new(1, 1);
     private readonly Dictionary<(string Device, string Control), RoutingDecision> _activePresses = new();
     private readonly Dictionary<Guid, List<string>> _heldKeys = new();
-    private readonly Dictionary<Guid, SpeechToolSession> _speechSessions = new();
-    private readonly Dictionary<Guid, long> _lastRepeatAt = new();
+    private readonly Dictionary<(string Device, string Control, Guid Binding), long> _lastRepeatAt = new();
 
     public RoutingEngine(
         ProfileRouter router,
         IActionExecutor executor,
         IHapticFeedback? haptic = null,
         RoutingEngineOptions? options = null,
-        TimeProvider? timeProvider = null,
-        ISpeechToolProcessController? speechToolController = null)
+        TimeProvider? timeProvider = null)
     {
         _router = router ?? throw new ArgumentNullException(nameof(router));
         _executor = executor ?? throw new ArgumentNullException(nameof(executor));
         _haptic = haptic;
         _options = options ?? RoutingEngineOptions.Default;
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _speechToolController = speechToolController;
     }
 
     /// <summary>
@@ -91,6 +84,11 @@ public sealed class RoutingEngine
         ControllerInputEvent input, CancellationToken cancellationToken)
     {
         var control = (input.DeviceId, input.ControlId.ToUpperInvariant());
+        if (input.Gesture is InputGesture.Pressed or InputGesture.Released)
+        {
+            ClearRepeatState(control);
+        }
+
         RoutingDecision? paired = null;
         if (input.Gesture == InputGesture.Released
             && _activePresses.TryGetValue(control, out paired))
@@ -121,7 +119,6 @@ public sealed class RoutingEngine
 
         if (paired is not null && decision.Binding?.Trigger.Gesture != InputGesture.Released)
         {
-            await PlayHapticAsync(input.DeviceId, paired.Binding!.Feedback ?? _options.SuccessFeedback, cancellationToken);
             return new ExecutionOutcome(RoutingStatus.Matched, paired.Profile, paired.Binding, true);
         }
 
@@ -139,8 +136,8 @@ public sealed class RoutingEngine
                 return new ExecutionOutcome(RoutingStatus.Matched, decision.Profile, binding, paired is not null);
             }
 
-            var needsPair = input.Gesture == InputGesture.Pressed
-                && (binding.Action is KeyboardShortcutAction { KeyDownOnly: true } or SpeechToolAction);
+            var needsPair = input.Gesture is InputGesture.Pressed or InputGesture.Held
+                && binding.Action is KeyboardShortcutAction { KeyDownOnly: true };
             if (needsPair && _activePresses.ContainsKey(control))
             {
                 return new ExecutionOutcome(RoutingStatus.Matched, decision.Profile, binding, false);
@@ -152,13 +149,12 @@ public sealed class RoutingEngine
             {
                 _activePresses[control] = decision with { Binding = executionBinding };
             }
-            if (executed)
+            if (executed && binding.Feedback is not null)
             {
-                // 仅在实际执行了输出动作（含配对抬起、语音会话结束）时提供反馈，
-                // 避免点按 Binding 的松开事件、节流掉的长按重复触发无意义震动。
+                // 反馈完全由 Binding 控制；留空时保持静默。
                 await PlayHapticAsync(
                     input.DeviceId,
-                    binding.Feedback ?? _options.SuccessFeedback,
+                    binding.Feedback,
                     cancellationToken);
             }
 
@@ -176,8 +172,8 @@ public sealed class RoutingEngine
     }
 
     /// <summary>
-    /// 释放所有被引擎保持的按键与语音会话（应用退出 / 输入源停止时调用），
-    /// 避免组合键卡住或语音工具进程残留。
+    /// 释放所有被引擎保持的按键（应用退出 / 输入源停止时调用），
+    /// 避免组合键卡住。
     /// </summary>
     public async ValueTask ReleaseAllAsync(CancellationToken cancellationToken = default)
     {
@@ -196,13 +192,11 @@ public sealed class RoutingEngine
     {
         _activePresses.Clear();
         List<List<string>> pending;
-        List<SpeechToolSession> sessions;
         lock (_sync)
         {
             pending = _heldKeys.Values.ToList();
             _heldKeys.Clear();
-            sessions = _speechSessions.Values.ToList();
-            _speechSessions.Clear();
+            _lastRepeatAt.Clear();
         }
 
         foreach (var keys in pending)
@@ -227,27 +221,6 @@ public sealed class RoutingEngine
                 // 尽力释放：单个按键抬起失败不应阻塞其余按键。
             }
         }
-
-        foreach (var session in sessions)
-        {
-            if (_speechToolController is null)
-            {
-                break;
-            }
-
-            try
-            {
-                await _speechToolController.StopAsync(session, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch
-            {
-                // 尽力结束：语音工具进程已自行退出时忽略。
-            }
-        }
     }
 
     private async ValueTask<bool> ExecuteBindingAsync(
@@ -258,7 +231,8 @@ public sealed class RoutingEngine
         switch (binding.Action)
         {
             case KeyboardShortcutAction keyboard when keyboard.KeyDownOnly:
-                if (input.Gesture == InputGesture.Pressed)
+                if (input.Gesture == binding.Trigger.Gesture
+                    && input.Gesture is InputGesture.Pressed or InputGesture.Held)
                 {
                     await _executor.ExecuteAsync(keyboard, cancellationToken);
                     TrackHeldKeys(binding.Id, keyboard.Keys);
@@ -274,7 +248,8 @@ public sealed class RoutingEngine
                 return false;
 
             case KeyboardShortcutAction keyboard when keyboard.KeyUpOnly:
-                if (input.Gesture == binding.Trigger.Gesture)
+                if (input.Gesture == binding.Trigger.Gesture
+                    && (input.Gesture != InputGesture.Held || ShouldRepeat(binding, input)))
                 {
                     await _executor.ExecuteAsync(keyboard, cancellationToken);
                     return true;
@@ -288,7 +263,7 @@ public sealed class RoutingEngine
                     return false;
                 }
 
-                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding))
+                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding, input))
                 {
                     return false;
                 }
@@ -296,60 +271,8 @@ public sealed class RoutingEngine
                 await _executor.ExecuteAsync(keyboard, cancellationToken);
                 return true;
 
-            case SpeechToolAction speech:
-                if (input.Gesture == InputGesture.Pressed)
-                {
-                    if (!string.IsNullOrWhiteSpace(speech.ExecutablePath))
-                    {
-                        // 进程模式：按住 = 启动语音工具，松开 = 结束会话。
-                        if (_speechToolController is null)
-                        {
-                            throw new InvalidOperationException(
-                                "语音动作配置了工具路径，但未注册 ISpeechToolProcessController。");
-                        }
-
-                        var session = await _speechToolController.StartAsync(
-                            speech.ExecutablePath,
-                            speech.Arguments,
-                            cancellationToken);
-                        if (session is null)
-                        {
-                            return false;
-                        }
-
-                        lock (_sync)
-                        {
-                            _speechSessions[binding.Id] = session;
-                        }
-
-                        return true;
-                    }
-
-                    await _executor.ExecuteAsync(speech.Start, cancellationToken);
-                    if (speech.Start.KeyDownOnly)
-                    {
-                        TrackHeldKeys(binding.Id, speech.Start.Keys);
-                    }
-
-                    return true;
-                }
-
-                if (input.Gesture == InputGesture.Released)
-                {
-                    if (!string.IsNullOrWhiteSpace(speech.ExecutablePath))
-                    {
-                        return await EndSpeechSessionAsync(binding.Id, cancellationToken);
-                    }
-
-                    await ReleaseHeldKeysAsync(binding.Id, cancellationToken);
-                    await _executor.ExecuteAsync(speech.Stop, cancellationToken);
-                    return true;
-                }
-
-                return false;
-
             case LaunchApplicationAction launch:
-                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding))
+                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding, input))
                 {
                     return false;
                 }
@@ -368,7 +291,7 @@ public sealed class RoutingEngine
                     return false;
                 }
 
-                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding))
+                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding, input))
                 {
                     return false;
                 }
@@ -382,7 +305,7 @@ public sealed class RoutingEngine
                     return false;
                 }
 
-                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding))
+                if (input.Gesture == InputGesture.Held && !ShouldRepeat(binding, input))
                 {
                     return false;
                 }
@@ -395,23 +318,46 @@ public sealed class RoutingEngine
         }
     }
 
-    private bool ShouldRepeat(InputBinding binding)
+    private bool ShouldRepeat(InputBinding binding, ControllerInputEvent input)
     {
-        var interval = Math.Max(
-            _options.MinimumHoldRepeatMilliseconds,
-            binding.Trigger.HoldMilliseconds);
-
         var now = _timeProvider.GetTimestamp();
+        var key = (input.DeviceId, input.ControlId.ToUpperInvariant(), binding.Id);
         lock (_sync)
         {
-            if (_lastRepeatAt.TryGetValue(binding.Id, out var last)
-                && _timeProvider.GetElapsedTime(last, now) < TimeSpan.FromMilliseconds(interval))
+            if (!_lastRepeatAt.TryGetValue(key, out var last))
+            {
+                _lastRepeatAt[key] = now;
+                return true;
+            }
+
+            if (binding.Trigger.HoldMilliseconds <= 0)
             {
                 return false;
             }
 
-            _lastRepeatAt[binding.Id] = now;
+            var interval = Math.Max(
+                _options.MinimumHoldRepeatMilliseconds,
+                binding.Trigger.HoldMilliseconds);
+            if (_timeProvider.GetElapsedTime(last, now) < TimeSpan.FromMilliseconds(interval))
+            {
+                return false;
+            }
+
+            _lastRepeatAt[key] = now;
             return true;
+        }
+    }
+
+    private void ClearRepeatState((string Device, string Control) control)
+    {
+        lock (_sync)
+        {
+            foreach (var key in _lastRepeatAt.Keys
+                         .Where(key => key.Device == control.Device && key.Control == control.Control)
+                         .ToArray())
+            {
+                _lastRepeatAt.Remove(key);
+            }
         }
     }
 
@@ -449,23 +395,6 @@ public sealed class RoutingEngine
         await _executor.ExecuteAsync(
             new KeyboardShortcutAction(held, KeyDownOnly: false, KeyUpOnly: true),
             cancellationToken);
-    }
-
-    private async ValueTask<bool> EndSpeechSessionAsync(
-        Guid bindingId,
-        CancellationToken cancellationToken)
-    {
-        SpeechToolSession? session;
-        lock (_sync)
-        {
-            if (!_speechSessions.Remove(bindingId, out session))
-            {
-                return false;
-            }
-        }
-
-        await _speechToolController!.StopAsync(session, cancellationToken);
-        return true;
     }
 
     private async ValueTask PlayHapticAsync(

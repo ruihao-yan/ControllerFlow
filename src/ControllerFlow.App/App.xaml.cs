@@ -6,14 +6,32 @@ namespace ControllerFlow.App;
 
 public partial class App : Application
 {
+    private const string SingleInstanceMutexName = @"Local\ControllerFlow.SingleInstance";
+
+    private Mutex? _singleInstanceMutex;
+    private bool _ownsSingleInstanceMutex;
+    private bool _servicesStarted;
+
     public AppServices Services { get; private set; } = null!;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
+        _singleInstanceMutex = new Mutex(
+            initiallyOwned: true,
+            SingleInstanceMutexName,
+            out var createdNew);
+        if (!createdNew)
+        {
+            Shutdown();
+            return;
+        }
+
+        _ownsSingleInstanceMutex = true;
         ShutdownMode = ShutdownMode.OnExplicitShutdown;
         Services = AppServices.Create();
+        _servicesStarted = true;
         DispatcherUnhandledException += OnDispatcherUnhandledException;
 
         await Services.InitializeAsync(CancellationToken.None);
@@ -48,25 +66,46 @@ public partial class App : Application
 
     protected override async void OnExit(ExitEventArgs e)
     {
-        Services.InputSource.InputReceived -= OnControllerInput;
-        await Services.ShutdownAsync(CancellationToken.None);
+        if (_servicesStarted)
+        {
+            Services.InputSource.InputReceived -= OnControllerInput;
+            await Services.ShutdownAsync(CancellationToken.None);
+        }
+
+        if (_ownsSingleInstanceMutex)
+        {
+            _singleInstanceMutex?.ReleaseMutex();
+        }
+
+        _singleInstanceMutex?.Dispose();
         base.OnExit(e);
     }
 
-    private void OnControllerInput(object? sender, ControllerInputEvent inputEvent)
+    private async void OnControllerInput(object? sender, ControllerInputEvent inputEvent)
     {
-        // 引擎内部自行捕获并记录执行失败；此处兜底记录未预期异常。
-        _ = Services.Engine.HandleAsync(inputEvent, CancellationToken.None)
-            .AsTask()
-            .ContinueWith(
-                task =>
-                {
-                    if (task.IsFaulted)
-                    {
-                        FileLog.Error($"处理输入事件失败（{inputEvent.ControlId}/{inputEvent.Gesture}）。", task.Exception);
-                    }
-                },
-                TaskScheduler.Default);
+        try
+        {
+            var outcome = await Services.Engine.HandleAsync(inputEvent, CancellationToken.None);
+            if (outcome.ActionExecuted)
+            {
+                FileLog.Info(
+                    $"输入已执行：{inputEvent.DeviceId}/{inputEvent.ControlId}/{inputEvent.Gesture}，Profile={outcome.Profile?.Name ?? "无"}。");
+            }
+            else if (!string.IsNullOrWhiteSpace(outcome.Error))
+            {
+                FileLog.Warn(
+                    $"输入执行失败：{inputEvent.DeviceId}/{inputEvent.ControlId}/{inputEvent.Gesture}，{outcome.Error}");
+            }
+            else
+            {
+                FileLog.Info(
+                    $"输入未执行：{inputEvent.DeviceId}/{inputEvent.ControlId}/{inputEvent.Gesture}，状态={outcome.Status}，Profile={outcome.Profile?.Name ?? "无"}。");
+            }
+        }
+        catch (Exception ex)
+        {
+            FileLog.Error($"处理输入事件失败（{inputEvent.ControlId}/{inputEvent.Gesture}）。", ex);
+        }
     }
 
     private void OnDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)

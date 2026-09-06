@@ -13,7 +13,6 @@ using ControllerFlow.Core.Profiles;
 using ControllerFlow.Windows.Desktop;
 using ControllerFlow.Windows.Diagnostics;
 using ControllerFlow.Windows.Logging;
-using Windows.Gaming.Input;
 
 // 与 WPF 自身类型（System.Windows.Input.InputGesture / InputBinding / MouseAction）重名，使用别名消歧。
 using CoreInputGesture = ControllerFlow.Core.Models.InputGesture;
@@ -68,7 +67,10 @@ public partial class MainWindow : Window
     private ControllerProfile? _editingProfile;
     private bool _exiting;
     private bool _capturing;
+    private bool _keyboardShortcutCapturing;
     private bool _syncingUi;
+    private readonly HashSet<KeyCode> _keyboardCaptureKeys = [];
+    private string _keyboardShortcutBeforeCapture = string.Empty;
     private System.Windows.Threading.DispatcherTimer? _gamepadTimer;
 
     public MainWindow(AppServices services)
@@ -88,6 +90,7 @@ public partial class MainWindow : Window
         ActionTypeBox.SelectedIndex = 0;
 
         _services.RoutingMonitor.ResolutionChanged += OnResolutionChanged;
+        _services.InputSource.InputReceived += OnInputStatusChanged;
         StatusEngineText.Text = "引擎：运行中";
 
         _gamepadTimer = new System.Windows.Threading.DispatcherTimer
@@ -120,6 +123,15 @@ public partial class MainWindow : Window
         if (_profiles.Count > 0)
         {
             ProfileListBox.SelectedIndex = 0;
+        }
+
+        if (_services.Store is JsonProfileStore jsonStore
+            && jsonStore.LastMigrationWarnings.Count > 0)
+        {
+            ValidationIssuesBox.Text = string.Join(
+                Environment.NewLine,
+                jsonStore.LastMigrationWarnings.Select(warning => $"[迁移] {warning}"));
+            SaveStatusText.Text = "检测到旧语音动作，已按提示迁移或停用；保存前请检查并备份配置。";
         }
     }
 
@@ -419,13 +431,10 @@ public partial class MainWindow : Window
             switch (binding.Action)
             {
                 case KeyboardShortcutAction keyboard:
-                    if (keyboard.KeyDownOnly || keyboard.KeyUpOnly)
-                    {
-                        return;
-                    }
-
                     ActionTypeBox.SelectedItem = _actionTypes[0];
                     KeyboardKeysBox.Text = string.Join("+", keyboard.Keys);
+                    KeyboardHoldUntilReleaseBox.IsChecked = keyboard.KeyDownOnly;
+                    KeyboardKeyUpOnlyBox.IsChecked = keyboard.KeyUpOnly;
                     break;
 
                 case CoreMouseAction mouse:
@@ -446,13 +455,6 @@ public partial class MainWindow : Window
                     LaunchArgsBox.Text = launch.Arguments ?? string.Empty;
                     break;
 
-                case SpeechToolAction speech:
-                    ActionTypeBox.SelectedItem = _actionTypes[4];
-                    SpeechStartKeysBox.Text = string.Join("+", speech.Start.Keys);
-                    SpeechStopKeysBox.Text = string.Join("+", speech.Stop.Keys);
-                    SpeechExecutableBox.Text = speech.ExecutablePath ?? string.Empty;
-                    SpeechArgumentsBox.Text = speech.Arguments ?? string.Empty;
-                    break;
             }
 
             if (binding.Feedback is { } feedback)
@@ -476,10 +478,8 @@ public partial class MainWindow : Window
         BindingEnabledBox.IsChecked = true;
 
         KeyboardKeysBox.Clear();
-        SpeechStartKeysBox.Clear();
-        SpeechStopKeysBox.Clear();
-        SpeechExecutableBox.Clear();
-        SpeechArgumentsBox.Clear();
+        KeyboardHoldUntilReleaseBox.IsChecked = false;
+        KeyboardKeyUpOnlyBox.IsChecked = false;
         MouseAmountBox.Text = "0";
         LaunchPathBox.Clear();
         LaunchArgsBox.Clear();
@@ -491,13 +491,28 @@ public partial class MainWindow : Window
 
     private void OnActionTypeChanged(object sender, SelectionChangedEventArgs e) => UpdateActionPanels();
 
+    private void OnKeyboardKeyDownOnlyChecked(object sender, RoutedEventArgs e)
+    {
+        if (KeyboardKeyUpOnlyBox is not null)
+        {
+            KeyboardKeyUpOnlyBox.IsChecked = false;
+        }
+    }
+
+    private void OnKeyboardKeyUpOnlyChecked(object sender, RoutedEventArgs e)
+    {
+        if (KeyboardHoldUntilReleaseBox is not null)
+        {
+            KeyboardHoldUntilReleaseBox.IsChecked = false;
+        }
+    }
+
     private void UpdateActionPanels()
     {
         KeyboardActionPanel.Visibility = ActionTypeBox.SelectedIndex == 0 ? Visibility.Visible : Visibility.Collapsed;
         MouseActionPanel.Visibility = ActionTypeBox.SelectedIndex == 1 ? Visibility.Visible : Visibility.Collapsed;
         MediaActionPanel.Visibility = ActionTypeBox.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
         LaunchActionPanel.Visibility = ActionTypeBox.SelectedIndex == 3 ? Visibility.Visible : Visibility.Collapsed;
-        SpeechActionPanel.Visibility = ActionTypeBox.SelectedIndex == 4 ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void OnClearFeedbackClick(object sender, RoutedEventArgs e)
@@ -543,8 +558,11 @@ public partial class MainWindow : Window
                 {
                     var keys = ParseKeyCombo(KeyboardKeysBox.Text);
                     return keys.Count > 0
-                        ? new KeyboardShortcutAction(keys)
-                        : Missing("请输入组合键，如 Ctrl+Alt+C。");
+                        ? new KeyboardShortcutAction(
+                            keys,
+                            KeyDownOnly: KeyboardHoldUntilReleaseBox.IsChecked == true,
+                            KeyUpOnly: KeyboardKeyUpOnlyBox.IsChecked == true)
+                        : Missing("请点击组合键输入框并按下键盘组合键。");
                 }
 
                 case 1:
@@ -571,24 +589,6 @@ public partial class MainWindow : Window
                     }
 
                     return new LaunchApplicationAction(LaunchPathBox.Text.Trim(), LaunchArgsBox.Text.Trim());
-                }
-
-                case 4:
-                {
-                    var startKeys = ParseKeyCombo(SpeechStartKeysBox.Text);
-                    var stopKeys = ParseKeyCombo(SpeechStopKeysBox.Text);
-                    var executable = SpeechExecutableBox.Text.Trim();
-
-                    if (string.IsNullOrWhiteSpace(executable) && startKeys.Count == 0)
-                    {
-                        return Missing("语音动作需配置开始快捷键或工具路径。");
-                    }
-
-                    return new SpeechToolAction(
-                        new KeyboardShortcutAction(startKeys, KeyDownOnly: executable.Length == 0 && startKeys.Count > 0),
-                        new KeyboardShortcutAction(stopKeys),
-                        string.IsNullOrWhiteSpace(executable) ? null : executable,
-                        SpeechArgumentsBox.Text.Trim());
                 }
 
                 default:
@@ -655,11 +655,11 @@ public partial class MainWindow : Window
         };
         var action = binding.Action switch
         {
-            KeyboardShortcutAction keyboard => string.Join("+", keyboard.Keys),
+            KeyboardShortcutAction keyboard =>
+                $"{string.Join("+", keyboard.Keys)}{(keyboard.KeyDownOnly ? "（保持至释放）" : keyboard.KeyUpOnly ? "（仅抬起）" : string.Empty)}",
             CoreMouseAction mouse => $"鼠标:{mouse.Operation}",
             MediaKeyAction media => KeyNameMap.GetDisplayName(media.Key),
             LaunchApplicationAction launch => $"启动:{Path.GetFileName(launch.ExecutablePath)}",
-            SpeechToolAction speech => speech.ExecutablePath is null ? "语音:快捷键" : "语音:进程",
             _ => "?"
         };
         var feedback = binding.Feedback is null ? string.Empty : " · 震动";
@@ -859,7 +859,125 @@ public partial class MainWindow : Window
         ValidationIssuesBox.Text = message;
     }
 
-    // ---------- 按键捕获 ----------
+    // ---------- 键盘快捷键捕获 ----------
+
+    private void OnKeyboardShortcutGotFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        _keyboardShortcutCapturing = true;
+        _keyboardCaptureKeys.Clear();
+        _keyboardShortcutBeforeCapture = KeyboardKeysBox.Text;
+        _services.Engine.IsPaused = true;
+        if (!_capturing)
+        {
+            StatusEngineText.Text = "引擎：已暂停（键盘快捷键录入中）";
+            SaveStatusText.Text = "请按下键盘组合键，录入完成后会自动保存到输入框。";
+        }
+    }
+
+    private void OnKeyboardShortcutLostFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        EndKeyboardShortcutCapture();
+    }
+
+    private void OnKeyboardShortcutPreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (!_keyboardShortcutCapturing || e.IsRepeat)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        if (!TryGetKeyCode(e, out var keyCode))
+        {
+            ShowValidationError("无法识别当前键盘按键，请重新录入。");
+            EndKeyboardShortcutCapture();
+            return;
+        }
+
+        keyCode = KeyboardShortcutCapture.NormalizeModifier(keyCode);
+        if (keyCode == KeyCode.Escape)
+        {
+            KeyboardKeysBox.Text = _keyboardShortcutBeforeCapture;
+            SaveStatusText.Text = "已取消键盘快捷键录入。";
+            EndKeyboardShortcutCapture();
+            return;
+        }
+
+        _keyboardCaptureKeys.Add(keyCode);
+        KeyboardKeysBox.Text = string.Join("+", KeyboardShortcutCapture.Format(_keyboardCaptureKeys));
+        if (!KeyboardShortcutCapture.IsModifier(keyCode))
+        {
+            EndKeyboardShortcutCapture();
+        }
+    }
+
+    private void OnKeyboardShortcutPreviewKeyUp(object sender, KeyEventArgs e)
+    {
+        if (!_keyboardShortcutCapturing)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        if (!TryGetKeyCode(e, out var keyCode))
+        {
+            return;
+        }
+
+        keyCode = KeyboardShortcutCapture.NormalizeModifier(keyCode);
+        if (!_keyboardCaptureKeys.Contains(keyCode)
+            || _keyboardCaptureKeys.Any(key => !KeyboardShortcutCapture.IsModifier(key)))
+        {
+            return;
+        }
+
+        KeyboardKeysBox.Text = string.Join("+", KeyboardShortcutCapture.Format(_keyboardCaptureKeys));
+        EndKeyboardShortcutCapture();
+    }
+
+    private void OnClearKeyboardShortcutClick(object sender, RoutedEventArgs e)
+    {
+        KeyboardKeysBox.Clear();
+        _keyboardCaptureKeys.Clear();
+        if (!_capturing)
+        {
+            _services.Engine.IsPaused = false;
+            StatusEngineText.Text = "引擎：运行中";
+        }
+    }
+
+    private static bool TryGetKeyCode(KeyEventArgs e, out KeyCode keyCode)
+    {
+        var key = e.Key == Key.System ? e.SystemKey : e.Key;
+        var virtualKey = KeyInterop.VirtualKeyFromKey(key);
+        if (virtualKey <= 0 || !Enum.IsDefined(typeof(KeyCode), virtualKey))
+        {
+            keyCode = KeyCode.None;
+            return false;
+        }
+
+        keyCode = (KeyCode)virtualKey;
+        return true;
+    }
+
+    private void EndKeyboardShortcutCapture()
+    {
+        if (!_keyboardShortcutCapturing)
+        {
+            return;
+        }
+
+        _keyboardShortcutCapturing = false;
+        _keyboardCaptureKeys.Clear();
+        if (!_capturing)
+        {
+            _services.Engine.IsPaused = false;
+            StatusEngineText.Text = "引擎：运行中";
+        }
+    }
+
+    // ---------- 手柄按键捕获 ----------
 
     private void OnCaptureTriggerClick(object sender, RoutedEventArgs e)
     {
@@ -934,11 +1052,32 @@ public partial class MainWindow : Window
         });
     }
 
+    private void OnInputStatusChanged(object? sender, ControllerInputEvent inputEvent)
+    {
+        if (inputEvent.Gesture == CoreInputGesture.Released)
+        {
+            return;
+        }
+
+        _ = Dispatcher.BeginInvoke(() =>
+        {
+            StatusControlText.Text = $"按键：{inputEvent.ControlId}";
+            StatusGestureText.Text = $"触发：{FormatGesture(inputEvent.Gesture)}";
+        });
+    }
+
+    private static string FormatGesture(CoreInputGesture gesture) => gesture switch
+    {
+        CoreInputGesture.Pressed => "按下",
+        CoreInputGesture.Held => "长按",
+        _ => gesture.ToString()
+    };
+
     private void UpdateGamepadStatus()
     {
         try
         {
-            var count = Gamepad.Gamepads.Count;
+            var count = _services.InputSource.ConnectedGamepadCount;
             StatusGamepadText.Text = $"手柄：{count} 个已连接";
         }
         catch
@@ -1121,6 +1260,8 @@ public partial class MainWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _services.RoutingMonitor.ResolutionChanged -= OnResolutionChanged;
+        _services.InputSource.InputReceived -= OnInputStatusChanged;
         _hwndSource?.RemoveHook(WndProc);
         _trayIcon?.Dispose();
         _gamepadTimer?.Stop();
@@ -1131,5 +1272,5 @@ public partial class MainWindow : Window
         base.OnClosed(e);
     }
 
-    private static readonly string[] _actionTypes = ["键盘快捷键", "鼠标", "媒体键", "启动程序", "语音"];
+    private static readonly string[] _actionTypes = ["键盘快捷键", "鼠标", "媒体键", "启动程序"];
 }

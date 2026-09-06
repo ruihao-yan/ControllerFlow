@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using ControllerFlow.Core.Input;
 using ControllerFlow.Core.Models;
 using ControllerFlow.Core.Ports;
 
@@ -40,6 +42,10 @@ public sealed class JsonProfileStore : IProfileStore
 {
     private readonly string _filePath;
     private readonly JsonSerializerOptions _jsonOptions;
+    private readonly List<string> _lastMigrationWarnings = [];
+
+    /// <summary>最近一次读取时发现的旧语音动作迁移提示。</summary>
+    public IReadOnlyList<string> LastMigrationWarnings => _lastMigrationWarnings.ToArray();
 
     public JsonProfileStore(string filePath)
     {
@@ -126,6 +132,8 @@ public sealed class JsonProfileStore : IProfileStore
             throw new ProfileStoreException($"读取配置文件失败：{path}", ex);
         }
 
+        json = MigrateLegacySpeechActions(json, path);
+
         ProfileFileFormat? document;
         try
         {
@@ -144,6 +152,173 @@ public sealed class JsonProfileStore : IProfileStore
         }
 
         return document!;
+    }
+
+    private string MigrateLegacySpeechActions(string json, string sourcePath)
+    {
+        _lastMigrationWarnings.Clear();
+
+        JsonNode? root;
+        try
+        {
+            root = JsonNode.Parse(json);
+        }
+        catch (JsonException)
+        {
+            return json;
+        }
+
+        if (root is not JsonObject document
+            || GetArray(document, "profiles") is not { } profiles)
+        {
+            return json;
+        }
+
+        var changed = false;
+        foreach (var profileNode in profiles)
+        {
+            if (profileNode is not JsonObject profile
+                || GetArray(profile, "bindings") is not { } bindings)
+            {
+                continue;
+            }
+
+            for (var index = 0; index < bindings.Count; index++)
+            {
+                if (bindings[index] is not JsonObject binding
+                    || GetObject(binding, "action") is not { } action
+                    || !string.Equals(GetString(action, "type"), "speechTool", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var start = GetObject(action, "start");
+                var stop = GetObject(action, "stop");
+                var executablePath = GetString(action, "executablePath");
+                var trigger = GetObject(binding, "trigger");
+                var triggerGesture = trigger is null ? null : GetString(trigger, "gesture");
+                var canMigrate = string.IsNullOrWhiteSpace(executablePath)
+                    && IsMigratableKeyboardAction(start)
+                    && IsMigratableKeyboardAction(stop)
+                    && GetBoolean(stop!, "keyDownOnly") != true
+                    && (string.IsNullOrWhiteSpace(triggerGesture)
+                        || string.Equals(triggerGesture, "Pressed", StringComparison.OrdinalIgnoreCase));
+
+                if (canMigrate)
+                {
+                    SetProperty(binding, "action", start!.DeepClone());
+
+                    var releaseBinding = (JsonObject)binding.DeepClone();
+                    SetProperty(releaseBinding, "id", JsonValue.Create(Guid.NewGuid().ToString()));
+                    SetProperty(releaseBinding, "action", stop!.DeepClone());
+                    var releaseTrigger = GetObject(releaseBinding, "trigger")!;
+                    SetProperty(releaseTrigger, "gesture", JsonValue.Create("Released"));
+                    bindings.Insert(index + 1, releaseBinding);
+                    index++;
+
+                    _lastMigrationWarnings.Add(
+                        "已将旧语音快捷键动作迁移为按下与释放两条普通键盘 Binding。请检查按键映射。");
+                }
+                else
+                {
+                    SetProperty(binding, "enabled", JsonValue.Create(false));
+                    SetProperty(binding, "action", CreateDisabledKeyboardAction());
+                    _lastMigrationWarnings.Add(
+                        string.IsNullOrWhiteSpace(executablePath)
+                            ? "旧语音动作缺少可迁移的快捷键，已停用该 Binding。"
+                            : $"旧语音工具动作（{executablePath}）无法迁移，已停用该 Binding。");
+                }
+
+                changed = true;
+            }
+        }
+
+        if (!changed)
+        {
+            return json;
+        }
+
+        if (string.Equals(sourcePath, _filePath, StringComparison.OrdinalIgnoreCase))
+        {
+            TryCreateLegacyBackup(sourcePath);
+        }
+
+        return document.ToJsonString();
+    }
+
+    private void TryCreateLegacyBackup(string sourcePath)
+    {
+        var backupPath = $"{sourcePath}.before-speech-removal.json";
+        try
+        {
+            if (!File.Exists(backupPath))
+            {
+                File.Copy(sourcePath, backupPath, overwrite: false);
+            }
+
+            _lastMigrationWarnings.Add($"旧配置备份已保留：{backupPath}");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _lastMigrationWarnings.Add($"旧配置备份失败：{ex.Message}");
+        }
+    }
+
+    private static JsonObject CreateDisabledKeyboardAction()
+    {
+        var keys = new JsonArray();
+        keys.Add(JsonValue.Create("F24"));
+        return new JsonObject
+        {
+            ["type"] = "keyboardShortcut",
+            ["keys"] = keys
+        };
+    }
+
+    private static bool IsMigratableKeyboardAction(JsonObject? action)
+    {
+        if (action is null
+            || !string.Equals(GetString(action, "type"), "keyboardShortcut", StringComparison.OrdinalIgnoreCase)
+            || GetArray(action, "keys") is not { Count: > 0 } keys
+            || (GetBoolean(action, "keyDownOnly") == true && GetBoolean(action, "keyUpOnly") == true))
+        {
+            return false;
+        }
+
+        return keys.All(key =>
+            key is JsonValue value
+            && value.TryGetValue<string>(out var name)
+            && KeyNameMap.TryGet(name, out _));
+    }
+
+    private static JsonArray? GetArray(JsonObject value, string name) =>
+        GetProperty(value, name) as JsonArray;
+
+    private static JsonObject? GetObject(JsonObject value, string name) =>
+        GetProperty(value, name) as JsonObject;
+
+    private static string? GetString(JsonObject value, string name) =>
+        GetProperty(value, name) is JsonValue jsonValue
+            && jsonValue.TryGetValue<string>(out var result)
+                ? result
+                : null;
+
+    private static bool? GetBoolean(JsonObject value, string name) =>
+        GetProperty(value, name) is JsonValue jsonValue
+            && jsonValue.TryGetValue<bool>(out var result)
+                ? result
+                : null;
+
+    private static JsonNode? GetProperty(JsonObject value, string name) =>
+        value.FirstOrDefault(property =>
+            string.Equals(property.Key, name, StringComparison.OrdinalIgnoreCase)).Value;
+
+    private static void SetProperty(JsonObject value, string name, JsonNode? propertyValue)
+    {
+        var existingName = value
+            .Select(property => property.Key)
+            .FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
+        value[existingName ?? name] = propertyValue;
     }
 
     private async ValueTask WriteDocumentAsync(

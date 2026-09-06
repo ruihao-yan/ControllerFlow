@@ -67,37 +67,6 @@ internal sealed class RecordingHaptic : IHapticFeedback
     }
 }
 
-/// <summary>记录会话启停的语音工具进程控制器；可按需注入启动失败。</summary>
-internal sealed class RecordingSpeechTool : ISpeechToolProcessController
-{
-    public List<SpeechToolSession> Started { get; } = [];
-
-    public List<SpeechToolSession> Stopped { get; } = [];
-
-    public Exception? ThrowOnStart { get; set; }
-
-    public ValueTask<SpeechToolSession?> StartAsync(
-        string executablePath,
-        string? arguments,
-        CancellationToken cancellationToken)
-    {
-        if (ThrowOnStart is not null)
-        {
-            throw ThrowOnStart;
-        }
-
-        var session = new SpeechToolSession(Guid.NewGuid(), executablePath);
-        Started.Add(session);
-        return ValueTask.FromResult<SpeechToolSession?>(session);
-    }
-
-    public ValueTask StopAsync(SpeechToolSession session, CancellationToken cancellationToken)
-    {
-        Stopped.Add(session);
-        return ValueTask.CompletedTask;
-    }
-}
-
 /// <summary>内存 Profile 存储：可注入内容 / 记录写入次数，支持“文件不存在”语义。</summary>
 internal sealed class InMemoryProfileStore : IProfileStore
 {

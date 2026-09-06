@@ -45,8 +45,7 @@ public sealed class ProfileRouter
                     StringComparison.OrdinalIgnoreCase)
                 && candidate.Trigger.Gesture == input.Gesture)
             // 释放配对：Released 事件没有精确手势匹配时，回退到同控件的
-            // Pressed 手势 Binding，让引擎完成 KeyDownOnly 组合键的配对抬起
-            // 与语音会话的结束（避免组合键卡住 / 会话残留）。
+            // Pressed 手势 Binding，让引擎完成 KeyDownOnly 组合键的配对抬起。
             ?? (input.Gesture == InputGesture.Released
                 ? profileBindings.FirstOrDefault(candidate =>
                     candidate.Enabled
